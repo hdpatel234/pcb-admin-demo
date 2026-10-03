@@ -1518,7 +1518,7 @@ export default function CreateOrderPage() {
                                     <SelectContent>
                                         <SelectItem value="Single PCB">Single PCB</SelectItem>
                                         <SelectItem value="Panel by Customer">Panel by Customer</SelectItem>
-                                        <SelectItem value="Panel by Megabyte Circuit">Panel by Megabyte Circuit</SelectItem>
+                                        <SelectItem value="Panel by Your Company">Panel by Your Company</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -1745,16 +1745,16 @@ export default function CreateOrderPage() {
                                             <SelectItem value="ENIG">ENIG (Immersion Gold)</SelectItem>
                                         ) : material === "Rogers" || material === "PTFE Teflon" ? (
                                             <>
-										<SelectItem value="OSP">OSP</SelectItem>
+                                                <SelectItem value="OSP">OSP</SelectItem>
 
-										{layerCount === "1" && (
-											<SelectItem value="Roller Tin">Roller Tin</SelectItem>
-										)}
+                                                {layerCount === "1" && (
+                                                    <SelectItem value="Roller Tin">Roller Tin</SelectItem>
+                                                )}
 
-										<SelectItem value="HASL(Leaded)">HASL (Leaded)</SelectItem>
-										<SelectItem value="LeadFree HASL">LeadFree HASL</SelectItem>
-										<SelectItem value="ENIG">ENIG (Immersion Gold)</SelectItem>
-									</>
+                                                <SelectItem value="HASL(Leaded)">HASL (Leaded)</SelectItem>
+                                                <SelectItem value="LeadFree HASL">LeadFree HASL</SelectItem>
+                                                <SelectItem value="ENIG">ENIG (Immersion Gold)</SelectItem>
+                                            </>
                                         ) : (
                                             <>
                                                 <SelectItem value="OSP">OSP</SelectItem>
@@ -2416,11 +2416,10 @@ export default function CreateOrderPage() {
                                                             setUnitPrice(item.unitPrice);
                                                         }}
                                                         title={`${item.formattedDate} (${item.weekday}) • ${item.workingDayNum} Working Days • Base: ₹${parseFloat(item.orderValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })} (₹${(parseFloat(item.orderValue) / qtyPcs).toFixed(2)}/pc)`}
-                                                        className={`p-1.5 sm:p-2 rounded-lg border text-center transition-all cursor-pointer select-none flex flex-col justify-between h-[72px] sm:h-[76px] ${
-                                                            isSelected
+                                                        className={`p-1.5 sm:p-2 rounded-lg border text-center transition-all cursor-pointer select-none flex flex-col justify-between h-[72px] sm:h-[76px] ${isSelected
                                                                 ? "bg-emerald-600 text-white border-2 border-emerald-700 shadow-sm ring-2 ring-emerald-500/40 z-10"
                                                                 : "bg-card hover:bg-emerald-500/10 border-border/90 hover:border-emerald-500/60 text-foreground"
-                                                        }`}
+                                                            }`}
                                                     >
                                                         <div className="flex items-center justify-between text-[10px] font-extrabold uppercase leading-none">
                                                             <span className={isSelected ? "text-white" : "text-slate-700 dark:text-slate-200"}>{item.weekday}</span>
@@ -2440,9 +2439,8 @@ export default function CreateOrderPage() {
                                                                 {item.monthStr}
                                                             </span>
                                                         </div>
-                                                        <div className={`pt-1 border-t text-[11px] font-black font-mono leading-none truncate ${
-                                                            isSelected ? "border-white/25 text-white" : "border-border/60 text-emerald-700 dark:text-emerald-400"
-                                                        }`}>
+                                                        <div className={`pt-1 border-t text-[11px] font-black font-mono leading-none truncate ${isSelected ? "border-white/25 text-white" : "border-border/60 text-emerald-700 dark:text-emerald-400"
+                                                            }`}>
                                                             {getCardDisplayPrice(item.orderValue)}
                                                         </div>
                                                     </div>
@@ -2499,33 +2497,30 @@ export default function CreateOrderPage() {
                                                     <button
                                                         type="button"
                                                         onClick={() => setPricingMethod("auto")}
-                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                                                            pricingMethod === "auto"
+                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${pricingMethod === "auto"
                                                                 ? "bg-emerald-500 text-white shadow-xs"
                                                                 : "text-muted-foreground hover:bg-muted"
-                                                        }`}
+                                                            }`}
                                                     >
                                                         Auto (Matrix)
                                                     </button>
                                                     <button
                                                         type="button"
                                                         onClick={() => setPricingMethod("pcb_rate")}
-                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                                                            pricingMethod === "pcb_rate"
+                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${pricingMethod === "pcb_rate"
                                                                 ? "bg-emerald-500 text-white shadow-xs"
                                                                 : "text-muted-foreground hover:bg-muted"
-                                                        }`}
+                                                            }`}
                                                     >
                                                         PCB Rate
                                                     </button>
                                                     <button
                                                         type="button"
                                                         onClick={() => setPricingMethod("price_per_sqm")}
-                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                                                            pricingMethod === "price_per_sqm"
+                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${pricingMethod === "price_per_sqm"
                                                                 ? "bg-emerald-500 text-white shadow-xs"
                                                                 : "text-muted-foreground hover:bg-muted"
-                                                        }`}
+                                                            }`}
                                                     >
                                                         SQM Rate
                                                     </button>
