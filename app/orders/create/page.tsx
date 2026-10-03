@@ -1,0 +1,2943 @@
+"use client";
+
+import { useState, useEffect, useRef, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import DashboardLayout from "@/components/layout/dashboard-layout";
+import {
+    ArrowLeft,
+    Upload,
+    CheckCircle2,
+    Users,
+    User,
+    Mail,
+    Phone,
+    Building,
+    FileArchive,
+    CreditCard,
+    Layers,
+    RefreshCw,
+    X,
+    UserPlus,
+    Sparkles,
+    Check,
+    FileText,
+    RotateCcw,
+    ShieldCheck,
+    Search,
+    ChevronsUpDown,
+    Calculator,
+    CalendarDays,
+    Sliders
+} from "lucide-react";
+import { toast } from "sonner";
+import Link from "next/link";
+import JSZip from "jszip";
+import PCBPreviewCanvas from "@/components/PCBPreviewCanvas";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { fetchPublicHolidays, PublicHoliday } from "@/lib/api/deliveryService";
+
+interface ClientUser {
+    id: number;
+    name: string;
+    first_name?: string;
+    last_name?: string;
+    email: string;
+    phone_number?: string;
+    company_name?: string;
+}
+
+interface DetectedLayerItem {
+    name: string;
+    status: "detected" | "not_detected";
+    filename?: string;
+}
+
+const GERBER_PATTERNS = {
+    topCopper: /\.(gtl|g1|top|cmp)$/i,
+    bottomCopper: /\.(gbl|g2|bot|sol)$/i,
+    topSolderMask: /\.(gts|tsm|stp)$/i,
+    bottomSolderMask: /\.(gbs|bsm|sbs)$/i,
+    topSilkscreen: /\.(gto|tsk|plc|sst)$/i,
+    bottomSilkscreen: /\.(gbo|bsk|pls|ssb)$/i,
+    drills: /\.(drl|txt|xln|tap|drd)$/i,
+    outline: /\.(gml|gko|outline|dim|gbr)$/i
+};
+
+function GerberPreviewImageCard({
+    title,
+    src,
+    isProcessing
+}: {
+    title: string;
+    src?: string;
+    isProcessing: boolean;
+}) {
+    const [imgLoading, setImgLoading] = useState(true);
+    const [imgError, setImgError] = useState(false);
+
+    useEffect(() => {
+        setImgLoading(true);
+        setImgError(false);
+    }, [src]);
+
+    return (
+        <div className="bg-muted/20 border border-border/70 rounded-xl p-4 flex flex-col items-center w-full shadow-xs">
+            <div className="flex items-center justify-between w-full mb-2.5">
+                <span className="text-xs font-bold text-muted-foreground">{title}</span>
+                {(isProcessing || (src && imgLoading)) && (
+                    <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                        <RefreshCw className="w-3 h-3 animate-spin text-emerald-500" />
+                        {isProcessing ? "Processing..." : "Loading..."}
+                    </span>
+                )}
+            </div>
+
+            <div className="w-full h-56 flex items-center justify-center overflow-hidden rounded-lg bg-background/60 p-3 border border-border/40 relative">
+                {isProcessing ? (
+                    <div className="flex flex-col items-center justify-center space-y-3 p-4 text-center">
+                        <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                            <RefreshCw className="w-6 h-6 animate-spin text-emerald-500" />
+                        </div>
+                        <div className="space-y-1">
+                            <p className="text-xs font-bold text-foreground">Generating {title}...</p>
+                            <p className="text-[11px] text-muted-foreground">Parsing Gerber layers & rendering preview image</p>
+                        </div>
+                    </div>
+                ) : !src ? (
+                    <div className="flex flex-col items-center justify-center p-4 text-center space-y-1">
+                        <FileArchive className="w-8 h-8 text-muted-foreground/40 mb-1" />
+                        <span className="text-xs font-medium text-muted-foreground">No preview available for this side</span>
+                    </div>
+                ) : (
+                    <>
+                        {imgLoading && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/80 backdrop-blur-xs z-10 space-y-2">
+                                <RefreshCw className="w-5 h-5 animate-spin text-emerald-500" />
+                                <span className="text-[11px] font-semibold text-muted-foreground">Loading preview image...</span>
+                            </div>
+                        )}
+                        {imgError ? (
+                            <div className="flex flex-col items-center justify-center p-4 text-center space-y-1 text-red-500">
+                                <span className="text-xs font-bold">Preview image error</span>
+                                <span className="text-[10px] text-muted-foreground">Could not load preview image for {title}</span>
+                            </div>
+                        ) : (
+                            <img
+                                src={src}
+                                alt={title}
+                                onLoad={() => setImgLoading(false)}
+                                onError={() => {
+                                    setImgLoading(false);
+                                    setImgError(true);
+                                }}
+                                className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${imgLoading ? "opacity-0" : "opacity-100"}`}
+                            />
+                        )}
+                    </>
+                )}
+            </div>
+        </div>
+    );
+}
+
+export default function CreateOrderPage() {
+    const router = useRouter();
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+    const [loadingClients, setLoadingClients] = useState(true);
+    const [submitting, setSubmitting] = useState(false);
+    const [clients, setClients] = useState<ClientUser[]>([]);
+
+    // Selected Client
+    const [selectedClientId, setSelectedClientId] = useState<string>("");
+
+    // Contact Details (filled from client or edited)
+    const [customerName, setCustomerName] = useState("");
+    const [userEmail, setUserEmail] = useState("");
+    const [userMobile, setUserMobile] = useState("");
+    const [companyName, setCompanyName] = useState("");
+
+    // Quick Add Client Modal State
+    const [quickAddOpen, setQuickAddOpen] = useState(false);
+    const [addingClient, setAddingClient] = useState(false);
+    const [newClientFirstName, setNewClientFirstName] = useState("");
+    const [newClientLastName, setNewClientLastName] = useState("");
+    const [newClientEmail, setNewClientEmail] = useState("");
+    const [newClientPhone, setNewClientPhone] = useState("");
+    const [newClientCompany, setNewClientCompany] = useState("");
+    const [newClientPassword, setNewClientPassword] = useState("Client@123");
+
+    // PCB Specifications (Quote Home Page fields & source of truth)
+    const [layerCount, setLayerCount] = useState<string>("2");
+    const [boardLength, setBoardLength] = useState<string>("100");
+    const [boardWidth, setBoardWidth] = useState<string>("100");
+    const [dimensionUnit, setDimensionUnit] = useState<string>("mm");
+    const [quantity, setQuantity] = useState<string>("5");
+    const [material, setMaterial] = useState<string>("FR-4");
+    const [substrateType, setSubstrateType] = useState<string>("25µm dielectric thickness");
+    const [coverlayColor, setCoverlayColor] = useState<string>("Yellow");
+    const [coverlayThickness, setCoverlayThickness] = useState<string>("PI:12.5um/AD:15um");
+    const [copperType, setCopperType] = useState<string>("Electro-deposited");
+    const [stiffener, setStiffener] = useState<string>("Without");
+    const [emiShielding, setEmiShielding] = useState<string>("Without");
+    const [cuttingMethod, setCuttingMethod] = useState<string>("Laser Cutting");
+    const [silkscreenOnStiffener, setSilkscreenOnStiffener] = useState<string>("No");
+    const [edaSoftware, setEdaSoftware] = useState<string>("EasyEDA Pro");
+    const [panelColumn, setPanelColumn] = useState<string>("");
+    const [panelRow, setPanelRow] = useState<string>("");
+    const [thickness, setThickness] = useState<string>("1.6mm");
+    const [surfaceFinish, setSurfaceFinish] = useState<string>("HASL(Leaded)");
+    const [solderMask, setSolderMask] = useState<string>("Green");
+    const [pcbColorHex, setPcbColorHex] = useState<string>("#52c41a");
+    const [silkscreen, setSilkscreen] = useState<string>("White");
+    const [copperWeight, setCopperWeight] = useState<string>("1 oz");
+    const [productType, setProductType] = useState<string>("Industrial/Consumer electronics");
+    const [differentDesign, setDifferentDesign] = useState<string>("1");
+    const [deliveryFormat, setDeliveryFormat] = useState<string>("Single PCB");
+    const [materialType, setMaterialType] = useState<string>("FR4-TG135");
+    const [goldThickness, setGoldThickness] = useState<string>("1 U\"");
+    const [viaCovering, setViaCovering] = useState<string>("Not Specified");
+    const [viaPlating, setViaPlating] = useState<string>("Not Specified");
+    const [minHole, setMinHole] = useState<string>("0.3mm/(0.4/0.45mm)");
+    const [confirmFile, setConfirmFile] = useState<string>("No");
+    const [markOnPcb, setMarkOnPcb] = useState<string>("Remove Mark");
+    const [elecTest, setElecTest] = useState<string>("Flying Probe Fully Test");
+    const [goldFingers, setGoldFingers] = useState<string>("No");
+    const [castellated, setCastellated] = useState<string>("No");
+    const [edgePlating, setEdgePlating] = useState<string>("No");
+    const [blindSlots, setBlindSlots] = useState<string>("No");
+    const [ulMarking, setUlMarking] = useState<string>("No");
+    const [humidity, setHumidity] = useState<string>("No");
+    const [kelvinTest, setKelvinTest] = useState<string>("No");
+    const [paperBetween, setPaperBetween] = useState<string>("No");
+    const [appearanceQuality, setAppearanceQuality] = useState<string>("IPC Class 2 Standard");
+    const [silkscreenTech, setSilkscreenTech] = useState<string>("Ink-jet Printing Silkscreen");
+    const [inspectionReport, setInspectionReport] = useState<string>("No");
+    const [pcbRemark, setPcbRemark] = useState<string>("");
+    const [pnNumber, setPnNumber] = useState<string>("");
+
+    const validateDimensions = (w: number, h: number, l: number) => {
+        if (isNaN(w) || isNaN(h) || w <= 0 || h <= 0) return;
+        const unitMultiplier = dimensionUnit === "inches" ? 25.4 : 1;
+        const wMm = w * unitMultiplier;
+        const hMm = h * unitMultiplier;
+
+        const minLength = 20;
+        const minWidth = 20;
+        let maxLength = 300;
+        let maxWidth = 300;
+
+        if (l === 1) {
+            maxLength = 400;
+            maxWidth = 400;
+        } else if (l === 2) {
+            maxLength = 300;
+            maxWidth = 300;
+        } else if ([4, 6, 8, 10, 12, 14, 16].includes(l)) {
+            maxLength = 400;
+            maxWidth = 500;
+        }
+
+        let newW = w;
+        let newH = h;
+        let reset = false;
+
+        if (wMm < minLength) {
+            newW = minLength / unitMultiplier;
+        }
+        if (hMm < minWidth) {
+            newH = minWidth / unitMultiplier;
+        }
+
+        if (wMm > maxLength || hMm > maxWidth) {
+            toast.error(`For ${l}-layer boards, board size must be between ${minLength}mm x ${minWidth}mm and ${maxLength}mm x ${maxWidth}mm.`);
+            newW = 100 / unitMultiplier;
+            newH = 100 / unitMultiplier;
+            reset = true;
+        }
+
+        if (newW !== w || newH !== h || reset) {
+            setBoardWidth(newW.toFixed(2));
+            setBoardLength(newH.toFixed(2));
+        }
+    };
+
+    const handleMaterialChange = (newMat: string) => {
+        setMaterial(newMat);
+        if (newMat === "Flex") {
+            if (!["1", "2", "4"].includes(layerCount)) {
+                setLayerCount("2");
+            }
+            setSubstrateType(prev => prev || "25µm dielectric thickness");
+            setSurfaceFinish("ENIG");
+            setSilkscreen("White");
+            setCopperType("Electro-deposited");
+            setCoverlayColor(prev => (prev === "Transparent" ? "Yellow" : (prev || "Yellow")));
+            setGoldThickness(prev => prev || "1 U\"");
+            setCopperWeight("0.5 oz");
+            setThickness("0.11mm");
+        } else if (newMat === "Rogers") {
+            setLayerCount("2");
+            setMaterialType("RO4350B(Dk=3.48,Df=0.0037)");
+            setSurfaceFinish("ENIG");
+            setGoldThickness(prev => prev || "1 U\"");
+            setCopperWeight("1 oz");
+            if (!["0.51mm", "0.76mm", "1.52mm"].includes(thickness)) {
+                setThickness("0.51mm");
+            }
+        } else if (newMat === "PTFE Teflon") {
+            setLayerCount("2");
+            setMaterialType("ZYF300CA-C(Dk=2.94,Df=0.0016)");
+            setSurfaceFinish("ENIG");
+            setGoldThickness(prev => prev || "1 U\"");
+            setCopperWeight("1 oz");
+            if (!["0.76mm", "1.52mm"].includes(thickness)) {
+                setThickness("0.76mm");
+            }
+        } else {
+            setMaterialType("FR4-TG135");
+            setCopperWeight("1 oz");
+            if (!["0.6mm", "0.8mm", "1.0mm", "1.2mm", "1.6mm", "2.0mm"].includes(thickness)) {
+                setThickness("1.6mm");
+            }
+        }
+    };
+
+    const handleSubstrateTypeChange = (newSub: string) => {
+        setSubstrateType(newSub);
+        if (material === "Flex") {
+            if (newSub === "Transparent") {
+                setCoverlayColor("Transparent");
+                if (layerCount === "1") setThickness("0.14mm");
+                else if (layerCount === "2") setThickness("0.24mm");
+            } else {
+                if (coverlayColor === "Transparent") {
+                    setCoverlayColor("Yellow");
+                }
+                if (newSub === "50µm dielectric thickness") {
+                    if (layerCount === "1") setThickness("0.12mm");
+                    else if (layerCount === "2") setThickness("0.19mm");
+                } else if (newSub === "25µm dielectric thickness") {
+                    if (layerCount === "1") setThickness("0.07mm");
+                    else if (layerCount === "2") setThickness("0.11mm");
+                }
+            }
+        }
+    };
+
+    const handleLayerChange = (newLayers: string) => {
+        setLayerCount(newLayers);
+        if (material === "Flex") {
+            if (newLayers === "1") {
+                if (substrateType === "Transparent") setThickness("0.14mm");
+                else if (substrateType === "50µm dielectric thickness") setThickness("0.12mm");
+                else setThickness("0.07mm");
+            } else if (newLayers === "2") {
+                if (substrateType === "Transparent") setThickness("0.24mm");
+                else if (substrateType === "50µm dielectric thickness") setThickness("0.19mm");
+                else setThickness("0.11mm");
+            } else if (newLayers === "4") {
+                setThickness("0.2mm");
+                setSubstrateType("25µm dielectric thickness");
+                if (coverlayColor === "Transparent") setCoverlayColor("Yellow");
+            }
+        }
+        validateDimensions(parseFloat(boardWidth) || 0, parseFloat(boardLength) || 0, parseInt(newLayers, 10));
+    };
+
+    // Delivery Calendar Matrix Selection State
+    const [selectedDay, setSelectedDay] = useState<number>(3);
+    const [pricingConfig, setPricingConfig] = useState<{ fixedCosts: any; priceTiers: any } | null>(null);
+
+    // Gerber File & Analysis State
+    const [gerberFile, setGerberFile] = useState<File | null>(null);
+    const [isValidating, setIsValidating] = useState(false);
+    const [detectionAlert, setDetectionAlert] = useState<string | null>(null);
+    const [detectedLayers, setDetectedLayers] = useState<DetectedLayerItem[]>([]);
+
+    // Existing Client Gerber Files State
+    const [clientGerberFiles, setClientGerberFiles] = useState<any[]>([]);
+    const [loadingClientGerbers, setLoadingClientGerbers] = useState(false);
+    const [selectedGerberFileId, setSelectedGerberFileId] = useState<string>("");
+    const [gerberMode, setGerberMode] = useState<"select" | "upload">("upload");
+
+    // Interactive Canvas Layer Toggles
+    const [activeLayers, setActiveLayers] = useState({
+        outline: true,
+        topCopper: true,
+        bottomCopper: true,
+        solderMask: true,
+        silkscreen: true,
+        drills: true
+    });
+
+    // Pricing & Delivery
+    const [unitPrice, setUnitPrice] = useState<string>("500");
+    const [orderValue, setOrderValue] = useState<string>("2500");
+    const [deliveryDate, setDeliveryDate] = useState<string>("");
+
+    // Manual Payment & Pricing Method
+    const [paymentCompleted, setPaymentCompleted] = useState<boolean>(false);
+    const [paymentMethod, setPaymentMethod] = useState<string>("Manual Payment");
+    const [pricingMethod, setPricingMethod] = useState<"auto" | "pcb_rate" | "price_per_sqm">("auto");
+    const [manualPrice, setManualPrice] = useState<string>("");
+    const [pcbRate, setPcbRate] = useState<string>("100");
+    const [pricePerSqm, setPricePerSqm] = useState<string>("5000");
+    const [gstOptionsList, setGstOptionsList] = useState<number[]>([0, 5, 12, 18, 20]);
+    const [gstRate, setGstRate] = useState<number>(18);
+    const [paymentReference, setPaymentReference] = useState<string>("");
+    const [paymentDate, setPaymentDate] = useState<string>("");
+    const [paymentNotes, setPaymentNotes] = useState<string>("");
+
+    // Public Holidays State (Matching Quote source of truth)
+    const [publicHolidays, setPublicHolidays] = useState<PublicHoliday[]>([]);
+
+    useEffect(() => {
+        let active = true;
+        async function loadPublicHolidays() {
+            const today = new Date();
+            const future = new Date();
+            future.setDate(today.getDate() + 60);
+
+            const formatYmd = (d: Date) => {
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, "0");
+                const day = String(d.getDate()).padStart(2, "0");
+                return `${y}-${m}-${day}`;
+            };
+
+            const startStr = formatYmd(today);
+            const endStr = formatYmd(future);
+            const list = await fetchPublicHolidays(startStr, endStr);
+            if (active) {
+                setPublicHolidays(list);
+            }
+        }
+        loadPublicHolidays();
+        return () => { active = false; };
+    }, []);
+
+    useEffect(() => {
+        const fetchGstSettings = async () => {
+            try {
+                const token = localStorage.getItem("admin_token");
+                const res = await fetch("/api/admin/gst-settings", {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                const json = await res.json();
+                if (json.success && json.data) {
+                    if (Array.isArray(json.data.rates)) setGstOptionsList(json.data.rates);
+                    if (json.data.active_rate) setGstRate(Number(json.data.active_rate));
+                }
+            } catch (err) {
+                console.error("Failed to load GST settings:", err);
+            }
+        };
+        fetchGstSettings();
+        const d = new Date();
+        setPaymentDate(d.toISOString().split("T")[0]);
+    }, []);
+
+    // Client Search & Combobox State
+    const [clientComboboxOpen, setClientComboboxOpen] = useState(false);
+    const [clientSearch, setClientSearch] = useState("");
+    const [debouncedClientSearch, setDebouncedClientSearch] = useState("");
+
+    // Fetch dynamic pricing configuration from backend API
+    useEffect(() => {
+        let active = true;
+        async function fetchPricingConfig() {
+            try {
+                const res = await fetch("/api/pcb-pricing");
+                const json = await res.json();
+                if (active && json.success && json.data) {
+                    setPricingConfig(json.data);
+                }
+            } catch (err) {
+                console.error("Failed to load PCB pricing configuration from API:", err);
+            }
+        }
+        fetchPricingConfig();
+        return () => { active = false; };
+    }, []);
+
+    const getPriceTiers = (mask: string, weight: string, thicknessVal: number, customTiers?: any) => {
+        if (!customTiers) return null;
+        const isThickness1_6 = Math.abs(thicknessVal - 1.6) < 0.01;
+        const thicknessKey = isThickness1_6 ? 1.6 : 'other';
+
+        return customTiers[mask]?.[weight]?.[thicknessKey] ?? customTiers[mask]?.[weight]?.['other'] ?? customTiers['Other']?.[weight]?.['other'] ?? null;
+    };
+
+    // Calculate dynamic 20-day options based on PCB Quote matrix logic
+    const getLeadTimePricing = () => {
+        const layers = parseInt(layerCount, 10) || 1;
+        const unitMultiplier = dimensionUnit === "inches" ? 25.4 : 1;
+        const length = (parseFloat(boardWidth) || 0) * unitMultiplier;
+        const width = (parseFloat(boardLength) || 0) * unitMultiplier;
+        const qty = Math.max(parseInt(quantity, 10) || 3, 3);
+        const maskKey = solderMask === "Green" ? "Green" : "Other";
+        const cWeight = copperWeight.replace(" ", "");
+        const rawThicknessStr = (thickness || "1.6").toString().replace(/[^0-9.]/g, "");
+        const thickVal = parseFloat(rawThicknessStr) || 1.6;
+
+        if (length <= 0 || width <= 0 || qty <= 0) {
+            return { options: [], showContact: false, totalAreaInSqM: 0 };
+        }
+
+        const areaPerBoard = (length * width) / 1000000;
+        const totalAreaInSqM = areaPerBoard * qty;
+        const areaInSqCm = totalAreaInSqM * 10000;
+
+        const fixedCosts: Record<string, Record<number, number>> = pricingConfig?.fixedCosts || {
+            '1': { 1: 3100, 3: 2100, 5: 1600, 7: 1500, 10: 1400, 13: 1280, 15: 1200, 17: 1120, 20: 1000 },
+            '2': { 1: 8100, 3: 4100, 5: 2600, 7: 2200, 10: 1900, 13: 1750, 15: 1650, 17: 1550, 20: 1400 },
+            '4': { 20: 6000 },
+            '6': { 20: 7000 },
+            '8': { 20: 8000 },
+            '10': { 20: 9000 }
+        };
+
+        const priceTiers = getPriceTiers(maskKey, cWeight, thickVal, pricingConfig?.priceTiers);
+        if (!priceTiers) {
+            return { options: [], showContact: false, totalAreaInSqM };
+        }
+
+        let tierKey = "";
+        if (totalAreaInSqM <= 0.5) tierKey = "0.5 or less";
+        else if (totalAreaInSqM <= 1) tierKey = "0.51 to 1";
+        else if (totalAreaInSqM <= 2) tierKey = "1.01 to 2";
+        else if (totalAreaInSqM <= 3) tierKey = "2.01 to 3";
+        else tierKey = "3.01 to 9.99";
+
+        const applicablePrices = priceTiers[layers.toString()]?.[tierKey];
+        if (!applicablePrices) {
+            return { options: [], showContact: false, totalAreaInSqM };
+        }
+
+        const daysList = [1, 3, 5, 7, 10, 13, 15, 17, 20];
+        const options = daysList.map((day, idx) => {
+            let costPerSqCm = applicablePrices[idx] !== undefined ? applicablePrices[idx] : (applicablePrices[4] ?? applicablePrices[0]);
+            if (day === 20 && applicablePrices[8] === undefined) {
+                costPerSqCm = (layers >= 4 && layers <= 10)
+                    ? applicablePrices[0]
+                    : (applicablePrices[4] ?? applicablePrices[0]) * 0.85;
+            }
+
+            const fixedCost = fixedCosts[layers.toString()]?.[day];
+            if (fixedCost === undefined) {
+                return { day, unitPrice: "0.00", orderValue: "0.00", visible: false };
+            }
+            const variableCost = areaInSqCm * costPerSqCm;
+            const totalCost = fixedCost + variableCost;
+            const uPrice = totalCost / qty;
+
+            return {
+                day,
+                unitPrice: uPrice.toFixed(2),
+                orderValue: totalCost.toFixed(2),
+                visible: true
+            };
+        });
+
+        if (layers >= 4 && layers <= 10) {
+            options.forEach(opt => {
+                if (opt.day !== 20) opt.visible = false;
+            });
+        } else if (layers === 1 || layers === 2) {
+            if (layers === 2) {
+                if (totalAreaInSqM > 2) {
+                    options.forEach(opt => { if ([1, 3, 5].includes(opt.day)) opt.visible = false; });
+                } else if (totalAreaInSqM > 1.5) {
+                    options.forEach(opt => { if ([1, 3].includes(opt.day)) opt.visible = false; });
+                } else if (totalAreaInSqM > 1) {
+                    options.forEach(opt => { if (opt.day === 1) opt.visible = false; });
+                }
+            } else if (layers === 1) {
+                if (totalAreaInSqM > 5) {
+                    options.forEach(opt => { if ([1, 3, 5].includes(opt.day)) opt.visible = false; });
+                } else if (totalAreaInSqM > 3) {
+                    options.forEach(opt => { if ([1, 3].includes(opt.day)) opt.visible = false; });
+                } else if (totalAreaInSqM > 2) {
+                    options.forEach(opt => { if (opt.day === 1) opt.visible = false; });
+                }
+            }
+        }
+
+        return { options, showContact: false, totalAreaInSqM };
+    };
+
+    // Computed 20-Day Interactive Delivery Matrix & Calendar Items
+    const deliveryCalendarDays = useMemo(() => {
+        const { options } = getLeadTimePricing();
+        const unitMultiplier = dimensionUnit === "inches" ? 25.4 : 1;
+        const length = (parseFloat(boardWidth) || 0) * unitMultiplier;
+        const width = (parseFloat(boardLength) || 0) * unitMultiplier;
+        const qty = Math.max(parseInt(quantity, 10) || 1, 1);
+        const layers = parseInt(layerCount, 10) || 1;
+
+        const defaultOrderValue = Math.max(Math.round(length * width * 0.05 * qty), 100);
+        const defaultUnitPrice = (defaultOrderValue / qty).toFixed(2);
+        const getOption = (dayNum: number) => options.find((o) => o.day === dayNum && o.visible);
+
+        let workingDayCounter = 0;
+
+        return Array.from({ length: 20 }, (_, i) => {
+            const daysAhead = i + 1;
+            const date = new Date();
+            date.setDate(date.getDate() + daysAhead);
+
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, "0");
+            const dayOfMonth = String(date.getDate()).padStart(2, "0");
+            const isoDateStr = `${year}-${month}-${dayOfMonth}`;
+
+            const isSunday = date.getDay() === 0;
+            const activeHoliday = publicHolidays.find((h) => {
+                const holidayDateStr = typeof h?.date === "string" ? h.date.split("T")[0] : "";
+                return holidayDateStr === isoDateStr;
+            });
+            const isHoliday = !!activeHoliday;
+
+            let matchedOrderValue = defaultOrderValue;
+            let matchedUnitPrice = parseFloat(defaultUnitPrice);
+            let visible = false;
+            let workingDayNum = 0;
+
+            if (!isSunday && !isHoliday) {
+                workingDayCounter++;
+                workingDayNum = workingDayCounter;
+
+                if (layers >= 4 && layers <= 10) {
+                    const opt20 = getOption(20);
+                    if (opt20) {
+                        matchedOrderValue = parseFloat(opt20.orderValue);
+                        matchedUnitPrice = parseFloat(opt20.unitPrice);
+                        visible = true;
+                    }
+                } else {
+                    const interpolate = (d1: number, d2: number, ratio: number = 0.5) => {
+                        const o1 = getOption(d1);
+                        const o2 = getOption(d2);
+                        if (o1 && o2) {
+                            const val1 = parseFloat(o1.orderValue);
+                            const val2 = parseFloat(o2.orderValue);
+                            const u1 = parseFloat(o1.unitPrice);
+                            const u2 = parseFloat(o2.unitPrice);
+                            return {
+                                orderValue: val1 + (val2 - val1) * ratio,
+                                unitPrice: u1 + (u2 - u1) * ratio,
+                                visible: true
+                            };
+                        } else if (o2) {
+                            return { orderValue: parseFloat(o2.orderValue), unitPrice: parseFloat(o2.unitPrice), visible: true };
+                        } else if (o1) {
+                            return { orderValue: parseFloat(o1.orderValue), unitPrice: parseFloat(o1.unitPrice), visible: true };
+                        }
+                        return null;
+                    };
+
+                    const dayNum = workingDayNum;
+                    const directOpt = getOption(dayNum);
+                    if (directOpt) {
+                        matchedOrderValue = parseFloat(directOpt.orderValue);
+                        matchedUnitPrice = parseFloat(directOpt.unitPrice);
+                        visible = true;
+                    } else if (dayNum === 2) {
+                        const res = interpolate(1, 3, 0.5);
+                        if (res) { matchedOrderValue = res.orderValue; matchedUnitPrice = res.unitPrice; visible = res.visible; }
+                    } else if (dayNum === 4) {
+                        const res = interpolate(3, 5, 0.5);
+                        if (res) { matchedOrderValue = res.orderValue; matchedUnitPrice = res.unitPrice; visible = res.visible; }
+                    } else if (dayNum === 6) {
+                        const res = interpolate(5, 7, 0.5);
+                        if (res) { matchedOrderValue = res.orderValue; matchedUnitPrice = res.unitPrice; visible = res.visible; }
+                    } else if (dayNum === 8) {
+                        const res = interpolate(7, 10, 1 / 3);
+                        if (res) { matchedOrderValue = res.orderValue; matchedUnitPrice = res.unitPrice; visible = res.visible; }
+                    } else if (dayNum === 9) {
+                        const res = interpolate(7, 10, 2 / 3);
+                        if (res) { matchedOrderValue = res.orderValue; matchedUnitPrice = res.unitPrice; visible = res.visible; }
+                    } else if (dayNum >= 10) {
+                        const ratio = Math.min((dayNum - 10) / 10, 1);
+                        const res = interpolate(10, 20, ratio);
+                        if (res) {
+                            matchedOrderValue = res.orderValue;
+                            matchedUnitPrice = res.unitPrice;
+                            visible = res.visible;
+                        } else {
+                            const o20 = getOption(20);
+                            if (o20) {
+                                matchedOrderValue = parseFloat(o20.orderValue);
+                                matchedUnitPrice = parseFloat(o20.unitPrice);
+                                visible = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            const isUnavailable = isSunday || isHoliday || !visible;
+
+            return {
+                day: daysAhead,
+                dateNum: date.getDate(),
+                monthStr: date.toLocaleDateString("en-IN", { month: "short" }),
+                fullMonthYear: date.toLocaleDateString("en-IN", { month: "long", year: "numeric" }),
+                weekday: date.toLocaleDateString("en-IN", { weekday: "short" }).toUpperCase(),
+                formattedDate: date.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
+                isoDateStr,
+                orderValue: isUnavailable ? "0.00" : matchedOrderValue.toFixed(2),
+                unitPrice: isUnavailable ? "0.00" : matchedUnitPrice.toFixed(2),
+                visible,
+                isSunday,
+                isHoliday,
+                holidayName: activeHoliday?.name || null,
+                isUnavailable,
+                workingDayNum
+            };
+        });
+    }, [
+        boardWidth,
+        boardLength,
+        quantity,
+        layerCount,
+        dimensionUnit,
+        publicHolidays,
+        pricingConfig,
+        copperWeight,
+        thickness,
+        surfaceFinish,
+        solderMask,
+        material
+    ]);
+
+    // Debounce search effect (400ms)
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedClientSearch(clientSearch);
+        }, 400);
+        return () => clearTimeout(timer);
+    }, [clientSearch]);
+
+    // Fetch clients for dropdown
+    const fetchClientsList = async (autoSelectId?: number, queryStr: string = debouncedClientSearch) => {
+        setLoadingClients(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            let url = "/api/admin/users";
+            if (queryStr.trim()) {
+                url += `?search=${encodeURIComponent(queryStr.trim())}&q=${encodeURIComponent(queryStr.trim())}`;
+            }
+            const res = await fetch(url, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (data.status || data.success) {
+                const list: ClientUser[] = data.data || data.users || [];
+                setClients(list);
+
+                if (autoSelectId) {
+                    const newlyAdded = list.find((c) => c.id === autoSelectId);
+                    if (newlyAdded) {
+                        setSelectedClientId(newlyAdded.id.toString());
+                        const fullName = newlyAdded.name || `${newlyAdded.first_name || ''} ${newlyAdded.last_name || ''}`.trim();
+                        setCustomerName(fullName);
+                        setUserEmail(newlyAdded.email || "");
+                        setUserMobile(newlyAdded.phone_number || "");
+                        setCompanyName(newlyAdded.company_name || "");
+                        fetchClientGerbers(newlyAdded.id.toString());
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Failed to load clients list:", err);
+        } finally {
+            setLoadingClients(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchClientsList(undefined, debouncedClientSearch);
+    }, [debouncedClientSearch]);
+
+    // Synchronize deliveryDate, unitPrice, and orderValue with deliveryCalendarDays
+    useEffect(() => {
+        if (!deliveryCalendarDays || deliveryCalendarDays.length === 0) return;
+
+        const currentItem = deliveryDate ? deliveryCalendarDays.find((d) => d.isoDateStr === deliveryDate && !d.isUnavailable) : null;
+
+        if (currentItem) {
+            setOrderValue(currentItem.orderValue);
+            setUnitPrice(currentItem.unitPrice);
+            setSelectedDay(currentItem.day);
+        } else if (!deliveryDate) {
+            const firstAvailable = deliveryCalendarDays.find((d) => !d.isUnavailable);
+            if (firstAvailable) {
+                setDeliveryDate(firstAvailable.isoDateStr);
+                setSelectedDay(firstAvailable.day);
+                setOrderValue(firstAvailable.orderValue);
+                setUnitPrice(firstAvailable.unitPrice);
+            }
+        }
+    }, [deliveryCalendarDays, deliveryDate]);
+
+    // Fetch Gerber files for selected client
+    const fetchClientGerbers = async (clientId: string) => {
+        if (!clientId) {
+            setClientGerberFiles([]);
+            setSelectedGerberFileId("");
+            setGerberMode("upload");
+            return;
+        }
+        setLoadingClientGerbers(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/gerber-files?type=client`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (data.status && Array.isArray(data.data)) {
+                // Filter gerber files for this client
+                const filtered = data.data.filter((g: any) => g.user_id?.toString() === clientId.toString());
+                setClientGerberFiles(filtered);
+                if (filtered.length > 0) {
+                    setGerberMode("select");
+                    setSelectedGerberFileId(filtered[0].id.toString());
+                } else {
+                    setGerberMode("upload");
+                    setSelectedGerberFileId("");
+                }
+            } else {
+                setClientGerberFiles([]);
+                setGerberMode("upload");
+                setSelectedGerberFileId("");
+            }
+        } catch (err) {
+            console.error("Failed to fetch client gerber files:", err);
+            setClientGerberFiles([]);
+            setGerberMode("upload");
+        } finally {
+            setLoadingClientGerbers(false);
+        }
+    };
+
+    // Handle Client Dropdown Selection
+    const handleClientSelect = (clientIdStr: string) => {
+        setSelectedClientId(clientIdStr);
+        setGerberFile(null);
+        setDetectionAlert(null);
+        setDetectedLayers([]);
+        if (!clientIdStr) {
+            setCustomerName("");
+            setUserEmail("");
+            setUserMobile("");
+            setCompanyName("");
+            setClientGerberFiles([]);
+            setSelectedGerberFileId("");
+            setGerberMode("upload");
+            return;
+        }
+        const found = clients.find((c) => c.id.toString() === clientIdStr);
+        if (found) {
+            const fullName = found.name || `${found.first_name || ''} ${found.last_name || ''}`.trim();
+            setCustomerName(fullName);
+            setUserEmail(found.email || "");
+            setUserMobile(found.phone_number || "");
+            setCompanyName(found.company_name || "");
+        }
+        fetchClientGerbers(clientIdStr);
+    };
+
+    // Quick Add Client Submit Handler
+    const handleQuickAddClient = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newClientFirstName.trim() && !newClientLastName.trim()) {
+            toast.error("Client name is required");
+            return;
+        }
+
+        setAddingClient(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const fullName = `${newClientFirstName} ${newClientLastName}`.trim();
+            const res = await fetch("/api/admin/users", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    name: fullName,
+                    first_name: newClientFirstName,
+                    last_name: newClientLastName,
+                    email: newClientEmail.trim() ? newClientEmail.trim().toLowerCase() : `client_${Date.now()}@noemail.internal`,
+                    phone_number: newClientPhone.trim(),
+                    company_name: newClientCompany.trim(),
+                    password: newClientPassword || "Client@123"
+                })
+            });
+
+            const data = await res.json();
+            if (res.ok && (data.status || data.success)) {
+                toast.success(`Client ${fullName} created successfully!`);
+                setQuickAddOpen(false);
+                setNewClientFirstName("");
+                setNewClientLastName("");
+                setNewClientEmail("");
+                setNewClientPhone("");
+                setNewClientCompany("");
+
+                const createdId = data.data?.id || data.user?.id;
+                await fetchClientsList(createdId);
+            } else {
+                toast.error(data.message || "Failed to add client");
+            }
+        } catch (err) {
+            console.error("Quick add client error:", err);
+            toast.error("An error occurred while adding client");
+        } finally {
+            setAddingClient(false);
+        }
+    };
+
+
+
+    // Gerber File & Analysis State
+    const [uploadedGerberFileId, setUploadedGerberFileId] = useState<number | null>(null);
+    const [topSvg, setTopSvg] = useState<string>("");
+    const [bottomSvg, setBottomSvg] = useState<string>("");
+
+    // Auto-update preview URLs when selecting an existing client Gerber file
+    useEffect(() => {
+        if (gerberMode === "select" && selectedGerberFileId) {
+            setTopSvg(`/api/gerber/${selectedGerberFileId}/preview/front`);
+            setBottomSvg(`/api/gerber/${selectedGerberFileId}/preview/back`);
+            const foundFile = clientGerberFiles.find(g => g.id.toString() === selectedGerberFileId);
+            if (foundFile) {
+                if (foundFile.layer_count) setLayerCount(foundFile.layer_count.toString());
+                if (foundFile.board_width) setBoardWidth(foundFile.board_width.toString());
+                if (foundFile.board_height) setBoardLength(foundFile.board_height.toString());
+            }
+        }
+    }, [selectedGerberFileId, gerberMode, clientGerberFiles]);
+
+    // Handle Gerber File Analysis & Layer/Dimension Extraction (Same /api/upload pipeline as Client)
+    const handleFileValidation = async (file: File) => {
+        setGerberFile(file);
+        setDetectionAlert(null);
+        setUploadedGerberFileId(null);
+        setTopSvg("");
+        setBottomSvg("");
+
+        const maxSize = 100 * 1024 * 1024;
+        if (file.size > maxSize) {
+            toast.error("File exceeds 100 MB limit.");
+            return;
+        }
+
+        const fileExtension = file.name.split('.').pop()?.toLowerCase();
+        if (fileExtension !== 'zip' && fileExtension !== 'rar') {
+            toast.error("Please upload a Gerber file in .zip or .rar format.");
+            return;
+        }
+
+        setIsValidating(true);
+
+        try {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const apiBase = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
+            const uploadUrl = apiBase ? (apiBase.endsWith("/api") ? `${apiBase}/upload` : `${apiBase}/api/upload`) : "/api/upload";
+
+            const res = await fetch(uploadUrl, {
+                method: "POST",
+                body: formData,
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                if (data.gerber_file_id) {
+                    setUploadedGerberFileId(data.gerber_file_id);
+                    setSelectedGerberFileId(data.gerber_file_id.toString());
+                }
+
+                const frontUrl = data.preview_front || (data.gerber_file_id ? `/api/gerber/${data.gerber_file_id}/preview/front` : "");
+                const backUrl = data.preview_back || (data.gerber_file_id ? `/api/gerber/${data.gerber_file_id}/preview/back` : "");
+
+                setTopSvg(frontUrl);
+                setBottomSvg(backUrl);
+
+                const widthVal = data.board_width ? Number(data.board_width).toFixed(2) : boardWidth;
+                const heightVal = data.board_height ? Number(data.board_height).toFixed(2) : boardLength;
+                const layerCountVal = data.layer_count ? String(data.layer_count) : layerCount;
+
+                setBoardWidth(widthVal);
+                setBoardLength(heightVal);
+                setLayerCount(layerCountVal);
+                setDimensionUnit("mm");
+
+                if (!pnNumber && file?.name) {
+                    setPnNumber(file.name);
+                }
+
+                toast.success(`Gerber processed successfully! Auto-detected ${layerCountVal} Layers, ${widthVal} x ${heightVal} mm`);
+            } else {
+                toast.error(data.error || "Gerber processing failed. Please verify archive files.");
+            }
+        } catch (err: any) {
+            console.error("Gerber upload error:", err);
+            toast.error("Network or server error during Gerber upload.");
+        } finally {
+            setIsValidating(false);
+        }
+    };
+
+    // Handle Submit Form
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!selectedClientId) {
+            toast.error("Please select a client or click '+ Quick Add Client'");
+            return;
+        }
+
+        setSubmitting(true);
+        try {
+            const selectedClientObj = clients.find((c) => c.id.toString() === selectedClientId);
+            const defaultBoardName = gerberFile ? gerberFile.name.replace(/\.[^/.]+$/, "") : `${selectedClientObj?.name || 'PCB'}_Order`;
+
+            const formData = new FormData();
+            formData.append("board_name", defaultBoardName);
+            if (pnNumber.trim()) {
+                formData.append("pn_number", pnNumber.trim());
+            }
+            formData.append("user_id", selectedClientId);
+            formData.append("customer_name", customerName);
+            formData.append("user_email", userEmail);
+            formData.append("user_mobile", userMobile);
+            formData.append("company_name", companyName);
+
+            // PCB Parameters
+            formData.append("layers", layerCount);
+            formData.append("dimensions_length", boardLength);
+            formData.append("dimensions_width", boardWidth);
+            formData.append("dimension_unit", dimensionUnit);
+            formData.append("quantity", quantity);
+            formData.append("material", material);
+            formData.append("thickness", thickness);
+            formData.append("surface_finish", surfaceFinish);
+            formData.append("solder_mask", solderMask);
+            formData.append("silkscreen", silkscreen);
+            formData.append("copper_weight", copperWeight);
+
+            // Extended Quote Specs Metas
+            formData.append("substrate_type", substrateType);
+            formData.append("coverlay_color", coverlayColor);
+            formData.append("coverlay_thickness", coverlayThickness);
+            formData.append("copper_type", copperType);
+            formData.append("stiffener", stiffener);
+            formData.append("emi_shielding", emiShielding);
+            formData.append("cutting_method", cuttingMethod);
+            formData.append("silkscreen_on_stiffener", silkscreenOnStiffener);
+            formData.append("eda_software", edaSoftware);
+            if (panelColumn) formData.append("panel_column", panelColumn);
+            if (panelRow) formData.append("panel_row", panelRow);
+            formData.append("product_type", productType);
+            formData.append("different_design", differentDesign);
+            formData.append("delivery_format", deliveryFormat);
+            formData.append("material_type", materialType);
+            formData.append("gold_thickness", goldThickness);
+            formData.append("via_covering", viaCovering);
+            formData.append("via_plating", viaPlating);
+            formData.append("min_hole", minHole);
+            formData.append("confirm_file", confirmFile);
+            formData.append("mark_on_pcb", markOnPcb);
+            formData.append("elec_test", elecTest);
+            formData.append("gold_fingers", goldFingers);
+            formData.append("castellated", castellated);
+            formData.append("edge_plating", edgePlating);
+            formData.append("blind_slots", blindSlots);
+            formData.append("ul_marking", ulMarking);
+            formData.append("humidity", humidity);
+            formData.append("kelvin_test", kelvinTest);
+            formData.append("paper_between", paperBetween);
+            formData.append("appearance_quality", appearanceQuality);
+            formData.append("silkscreen_tech", silkscreenTech);
+            formData.append("inspection_report", inspectionReport);
+            if (pcbRemark) formData.append("pcb_remark", pcbRemark);
+            formData.append("lead_time_days", selectedDay.toString());
+
+            // Financials & Pricing Calculation
+            const unitMult = dimensionUnit === "inches" ? 25.4 : 1;
+            const lengthMm = (parseFloat(boardWidth) || 100) * unitMult;
+            const widthMm = (parseFloat(boardLength) || 100) * unitMult;
+            const qtyPcs = Math.max(1, parseInt(quantity, 10) || 1);
+            const areaPerBoardSqm = (lengthMm * widthMm) / 1000000;
+            const totalAreaSqm = areaPerBoardSqm * qtyPcs;
+
+            let calculatedSubtotal = 0;
+            const hasManualPrice = manualPrice.trim() !== "" && !isNaN(parseFloat(manualPrice)) && parseFloat(manualPrice) >= 0;
+            if (hasManualPrice) {
+                calculatedSubtotal = parseFloat(manualPrice);
+            } else if (pricingMethod === "pcb_rate") {
+                calculatedSubtotal = (parseFloat(pcbRate) || 0) * qtyPcs;
+            } else if (pricingMethod === "price_per_sqm") {
+                calculatedSubtotal = (parseFloat(pricePerSqm) || 0) * totalAreaSqm;
+            } else {
+                calculatedSubtotal = parseFloat(orderValue) || 0;
+            }
+
+            const calculatedGst = calculatedSubtotal * (gstRate / 100);
+            const finalOrderTotal = calculatedSubtotal + calculatedGst;
+            const computedUnitPrice = qtyPcs > 0 ? (calculatedSubtotal / qtyPcs) : 0;
+
+            formData.append("pricing_method", hasManualPrice ? "manual" : pricingMethod);
+            if (hasManualPrice) {
+                formData.append("manual_price", manualPrice.trim());
+                formData.append("manual_pcb_price", manualPrice.trim());
+            }
+            formData.append("pcb_rate", pcbRate);
+            formData.append("price_per_sqm", pricePerSqm);
+            formData.append("gst_rate", gstRate.toString());
+            formData.append("subtotal", calculatedSubtotal.toFixed(2));
+            formData.append("gst_amount", calculatedGst.toFixed(2));
+            formData.append("unit_price", computedUnitPrice.toFixed(2));
+            formData.append("order_value", finalOrderTotal.toFixed(2));
+
+            if (deliveryDate) {
+                formData.append("delivery_date", deliveryDate);
+            }
+
+            // Payment
+            const isManualPay = paymentCompleted || paymentMethod === "Manual Payment" || paymentMethod.includes("Manual");
+            formData.append("payment_status", isManualPay ? "completed" : "pending");
+            formData.append("payment_method", paymentMethod);
+            if (paymentReference) formData.append("payment_reference", paymentReference);
+            if (paymentDate) formData.append("payment_date", paymentDate);
+            if (paymentNotes) formData.append("payment_notes", paymentNotes);
+
+            // Gerber File (Upload new file or select existing client file)
+            if (gerberMode === "select" && selectedGerberFileId) {
+                formData.append("gerber_file_id", selectedGerberFileId);
+            } else if (gerberFile) {
+                formData.append("gerber_file", gerberFile);
+            }
+
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch("/api/admin/orders", {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`
+                },
+                body: formData
+            });
+
+            const data = await res.json();
+            if (res.ok && (data.status || data.success)) {
+                toast.success(`Order ${data.data?.order_number || ''} created successfully!`);
+                router.push("/orders");
+            } else {
+                toast.error(data.message || "Failed to create order");
+            }
+        } catch (err) {
+            console.error("Order creation error:", err);
+            toast.error("An error occurred while creating the order");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const backButton = (
+        <Link
+            href="/orders"
+            className="flex items-center gap-2 px-4 py-2 bg-card border border-border/80 hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+        >
+            <ArrowLeft className="w-4 h-4 text-muted-foreground" />
+            Back to Orders
+        </Link>
+    );
+
+    return (
+        <DashboardLayout
+            title="Create New Order"
+            subtitle="Manually create a PCB order with parameters, client selection, Gerber upload, and payment status"
+            action={backButton}
+        >
+            {/* Hidden File Input for Re-uploading Gerber */}
+            <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip,.rar,.7z,.gz"
+                onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                        handleFileValidation(e.target.files[0]);
+                    }
+                }}
+                className="hidden"
+            />
+
+            <div className="space-y-6 w-full pb-12">
+                <form onSubmit={handleSubmit} className="space-y-6">
+                    {/* Section 1: Client Selection & Quick Add */}
+                    <div className="bg-card border border-border/80 rounded-xl p-6 shadow-xs space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-border/60 pb-3 gap-3">
+                            <div className="flex items-center gap-2.5">
+                                <div className="p-2 rounded-xl bg-blue-500/10 text-blue-500">
+                                    <Users className="w-5 h-5" />
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-bold text-foreground">1. Select Client Account</h3>
+                                    <p className="text-xs text-muted-foreground font-medium">Select a registered client or add a new client quickly</p>
+                                </div>
+                            </div>
+
+                            {/* Quick Add Client Button */}
+                            <button
+                                type="button"
+                                onClick={() => setQuickAddOpen(true)}
+                                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-bold transition-colors cursor-pointer"
+                            >
+                                <UserPlus className="w-4 h-4" />
+                                + Quick Add Client
+                            </button>
+                        </div>
+
+                        {/* Client Searchable Dropdown (shadcn/ui Combobox) */}
+                        <div className="w-full max-w-xl">
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5">
+                                Select Client Account <span className="text-red-500">*</span>
+                            </label>
+                            <input type="hidden" name="selectedClientId" value={selectedClientId} required />
+
+                            <Popover open={clientComboboxOpen} onOpenChange={setClientComboboxOpen}>
+                                <PopoverTrigger asChild>
+                                    <button
+                                        type="button"
+                                        role="combobox"
+                                        aria-expanded={clientComboboxOpen}
+                                        className="w-full h-11 px-3.5 flex items-center justify-between rounded-xl bg-card border border-border/80 text-xs font-semibold text-foreground hover:bg-accent/40 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer shadow-xs transition-all"
+                                    >
+                                        <div className="flex items-center gap-2 truncate">
+                                            <User className="w-4 h-4 text-emerald-500 shrink-0" />
+                                            <span className="truncate">
+                                                {selectedClientId ? (() => {
+                                                    const selected = clients.find(c => c.id.toString() === selectedClientId);
+                                                    if (!selected) return "Select Client Account...";
+                                                    const personName = (selected.name || `${selected.first_name || ''} ${selected.last_name || ''}`).trim();
+                                                    const companyName = (selected.company_name || '').trim();
+                                                    const title = companyName && personName
+                                                        ? `${companyName} (${personName})`
+                                                        : (companyName || personName || `Client #${selected.id}`);
+                                                    const emailDisplay = (selected.email && !selected.email.includes('@noemail.internal')) ? ` (${selected.email})` : '';
+                                                    return `${title}${emailDisplay}`;
+                                                })() : "Search or select client account..."}
+                                            </span>
+                                        </div>
+                                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50 text-muted-foreground" />
+                                    </button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 rounded-2xl border-border/80 shadow-xl overflow-hidden bg-card text-foreground" align="start">
+                                    <Command shouldFilter={false}>
+                                        <CommandInput
+                                            placeholder="Search client by name, email, phone..."
+                                            value={clientSearch}
+                                            onValueChange={(val) => setClientSearch(val)}
+                                            className="h-10 text-xs font-semibold"
+                                        />
+                                        <CommandList className="max-h-64 overflow-y-auto">
+                                            {loadingClients ? (
+                                                <div className="flex items-center justify-center p-4 text-xs font-bold text-muted-foreground gap-2">
+                                                    <RefreshCw className="w-4 h-4 text-emerald-500 animate-spin" />
+                                                    Searching clients...
+                                                </div>
+                                            ) : clients.length === 0 ? (
+                                                <CommandEmpty className="py-4 text-center text-xs font-medium text-muted-foreground">
+                                                    No clients found.
+                                                </CommandEmpty>
+                                            ) : (
+                                                <CommandGroup>
+                                                    {(() => {
+                                                        let displayList = clients;
+                                                        if (!debouncedClientSearch.trim()) {
+                                                            displayList = clients.slice(0, 10);
+                                                            if (selectedClientId && !displayList.some(c => c.id.toString() === selectedClientId)) {
+                                                                const selectedObj = clients.find(c => c.id.toString() === selectedClientId);
+                                                                if (selectedObj) displayList = [selectedObj, ...displayList];
+                                                            }
+                                                        }
+                                                        return displayList.map((c) => {
+                                                            const isSelected = selectedClientId === c.id.toString();
+                                                            const personName = (c.name || `${c.first_name || ''} ${c.last_name || ''}`).trim();
+                                                            const companyName = (c.company_name || '').trim();
+                                                            const clientTitle = companyName && personName
+                                                                ? `${companyName} (${personName})`
+                                                                : (companyName || personName || `Client #${c.id}`);
+                                                            const emailDisplay = (c.email && !c.email.includes('@noemail.internal')) ? c.email : '';
+                                                            return (
+                                                                <CommandItem
+                                                                    key={c.id}
+                                                                    value={c.id.toString()}
+                                                                    onSelect={() => {
+                                                                        handleClientSelect(c.id.toString());
+                                                                        setClientComboboxOpen(false);
+                                                                    }}
+                                                                    className="flex items-center justify-between px-3 py-2.5 text-xs font-medium cursor-pointer hover:bg-accent/60 transition-colors"
+                                                                >
+                                                                    <div className="flex flex-col gap-0.5 truncate pr-2">
+                                                                        <span className="font-bold text-foreground truncate">
+                                                                            {clientTitle}
+                                                                        </span>
+                                                                        <span className="text-[11px] text-muted-foreground truncate">
+                                                                            {emailDisplay} {c.phone_number ? `${emailDisplay ? '· ' : ''}${c.phone_number}` : ''}
+                                                                        </span>
+                                                                    </div>
+                                                                    {isSelected && <Check className="h-4 w-4 text-emerald-500 shrink-0 ml-2" />}
+                                                                </CommandItem>
+                                                            );
+                                                        });
+                                                    })()}
+                                                </CommandGroup>
+                                            )}
+                                        </CommandList>
+                                    </Command>
+                                </PopoverContent>
+                            </Popover>
+                            <p className="text-[11px] text-muted-foreground font-medium mt-1.5">
+                                {debouncedClientSearch.trim()
+                                    ? `Showing search results for "${debouncedClientSearch}" (${clients.length} found)`
+                                    : `Showing first ${Math.min(10, clients.length)} of ${clients.length} clients. Type inside dropdown search to filter dynamically.`}
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Section 2: PCB Specifications */}
+                    <div className="bg-card border border-border/80 rounded-xl p-6 shadow-xs space-y-5">
+                        <div className="flex items-center justify-between border-b border-border/60 pb-3">
+                            <div className="flex items-center gap-2.5">
+                                <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500">
+                                    <Layers className="w-5 h-5" />
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-bold text-foreground">2. PCB Specifications</h3>
+                                    <p className="text-xs text-muted-foreground font-medium">Configure detailed board parameters matching customer Quote page specifications</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Gerber Analysis Alert */}
+                        {detectionAlert && (
+                            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-bold flex items-center gap-2">
+                                <Sparkles className="w-4 h-4 shrink-0" />
+                                <span>{detectionAlert}</span>
+                            </div>
+                        )}
+
+                        {/* Core Quote Options Grid */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {/* P/N Number */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">P/N Number</label>
+                                <Input
+                                    type="text"
+                                    placeholder="Enter P/N (e.g. ABC123)"
+                                    value={pnNumber}
+                                    onChange={(e) => setPnNumber(e.target.value)}
+                                    className="h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                />
+                            </div>
+
+                            {/* Base Material */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Base Material</label>
+                                <Select value={material} onValueChange={handleMaterialChange}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue placeholder="Select Base Material" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="FR-4">FR-4 Standard</SelectItem>
+                                        <SelectItem value="Flex">Flex (FPC)</SelectItem>
+                                        <SelectItem value="Rogers">Rogers Ceramic</SelectItem>
+                                        <SelectItem value="PTFE Teflon">PTFE Teflon</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Substrate Type (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Substrate Type</label>
+                                    <Select value={substrateType} onValueChange={handleSubstrateTypeChange}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue placeholder="Select Substrate Type" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="25µm dielectric thickness">25µm dielectric thickness</SelectItem>
+                                            <SelectItem value="50µm dielectric thickness" disabled={layerCount === "4"}>50µm dielectric thickness</SelectItem>
+                                            <SelectItem value="Transparent" disabled={layerCount === "4"}>Transparent Substrate</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Layer Count */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Layer Count</label>
+                                <Select value={layerCount} onValueChange={handleLayerChange}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue placeholder="Select Layers" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {material === "Rogers" || material === "PTFE Teflon" ? (
+                                            <SelectItem value="2">2 Layers</SelectItem>
+                                        ) : material === "Flex" ? (
+                                            <>
+                                                <SelectItem value="1">1 Layer</SelectItem>
+                                                <SelectItem value="2">2 Layers</SelectItem>
+                                                <SelectItem value="4">4 Layers</SelectItem>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <SelectItem value="1">1 Layer</SelectItem>
+                                                <SelectItem value="2">2 Layers</SelectItem>
+                                                <SelectItem value="4">4 Layers</SelectItem>
+                                                <SelectItem value="6">6 Layers (High Precision)</SelectItem>
+                                                <SelectItem value="8">8 Layers (High Precision)</SelectItem>
+                                                <SelectItem value="10">10 Layers (High Precision)</SelectItem>
+                                                <SelectItem value="12">12 Layers (High Precision)</SelectItem>
+                                                <SelectItem value="14">14 Layers (High Precision)</SelectItem>
+                                                <SelectItem value="16">16 Layers (High Precision)</SelectItem>
+                                            </>
+                                        )}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Dimensions */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Dimensions (L x W)</label>
+                                <div className="flex items-center gap-1.5">
+                                    <Input
+                                        type="number"
+                                        placeholder="Length"
+                                        value={boardLength}
+                                        onChange={(e) => setBoardLength(e.target.value)}
+                                        onBlur={(e) => {
+                                            let val = parseFloat(e.target.value);
+                                            if (isNaN(val) || val <= 0) val = 100;
+                                            setBoardLength(val.toString());
+                                            validateDimensions(parseFloat(boardWidth) || 0, val, parseInt(layerCount, 10));
+                                        }}
+                                        className="h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                    />
+                                    <span className="text-xs text-muted-foreground font-bold">x</span>
+                                    <Input
+                                        type="number"
+                                        placeholder="Width"
+                                        value={boardWidth}
+                                        onChange={(e) => setBoardWidth(e.target.value)}
+                                        onBlur={(e) => {
+                                            let val = parseFloat(e.target.value);
+                                            if (isNaN(val) || val <= 0) val = 100;
+                                            setBoardWidth(val.toString());
+                                            validateDimensions(val, parseFloat(boardLength) || 0, parseInt(layerCount, 10));
+                                        }}
+                                        className="h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                    />
+                                    <Select value={dimensionUnit} onValueChange={setDimensionUnit}>
+                                        <SelectTrigger className="w-20 h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="mm">mm</SelectItem>
+                                            <SelectItem value="inches">inches</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+
+                            {/* Quantity */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Quantity (Pcs)</label>
+                                <Input
+                                    type="number"
+                                    min="5"
+                                    value={quantity}
+                                    onChange={(e) => setQuantity(e.target.value)}
+                                    className="h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                />
+                            </div>
+
+                            {/* Product Type */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Product Type</label>
+                                <Select value={productType} onValueChange={setProductType}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="Industrial/Consumer electronics">Industrial/Consumer electronics</SelectItem>
+                                        <SelectItem value="Medical equipment">Medical equipment</SelectItem>
+                                        <SelectItem value="Automotive electronics">Automotive electronics</SelectItem>
+                                        <SelectItem value="Aerospace">Aerospace</SelectItem>
+                                        <SelectItem value="Telecommunication">Telecommunication</SelectItem>
+                                        <SelectItem value="Other">Other</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Different Design */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Different Design Count</label>
+                                <Select value={differentDesign} onValueChange={setDifferentDesign}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="1">1 Design</SelectItem>
+                                        <SelectItem value="2">2 Designs</SelectItem>
+                                        <SelectItem value="3">3 Designs</SelectItem>
+                                        <SelectItem value="4">4 Designs</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Delivery Format */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Delivery Format</label>
+                                <Select value={deliveryFormat} onValueChange={setDeliveryFormat}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="Single PCB">Single PCB</SelectItem>
+                                        <SelectItem value="Panel by Customer">Panel by Customer</SelectItem>
+                                        <SelectItem value="Panel by Megabyte Circuit">Panel by Megabyte Circuit</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Panel Columns & Rows (when Delivery Format is Panel) */}
+                            {deliveryFormat !== "Single PCB" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Panel Layout (Col x Row)</label>
+                                    <div className="flex items-center gap-1.5">
+                                        <Input
+                                            type="number"
+                                            min="1"
+                                            placeholder="Columns"
+                                            value={panelColumn}
+                                            onChange={(e) => setPanelColumn(e.target.value)}
+                                            className="h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                        />
+                                        <span className="text-xs text-muted-foreground font-bold">x</span>
+                                        <Input
+                                            type="number"
+                                            min="1"
+                                            placeholder="Rows"
+                                            value={panelRow}
+                                            onChange={(e) => setPanelRow(e.target.value)}
+                                            className="h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Board Thickness */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Board Thickness</label>
+                                <Select value={thickness} onValueChange={setThickness}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue placeholder="Select Thickness" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {material === "Flex" ? (
+                                            substrateType === "Transparent" ? (
+                                                layerCount === "1" ? (
+                                                    <SelectItem value="0.14mm">0.14 mm</SelectItem>
+                                                ) : (
+                                                    <SelectItem value="0.24mm">0.24 mm</SelectItem>
+                                                )
+                                            ) : substrateType === "50µm dielectric thickness" ? (
+                                                layerCount === "1" ? (
+                                                    <>
+                                                        <SelectItem value="0.07mm" disabled>0.07 mm (N/A)</SelectItem>
+                                                        <SelectItem value="0.12mm">0.12 mm</SelectItem>
+                                                    </>
+                                                ) : layerCount === "4" ? (
+                                                    <>
+                                                        <SelectItem value="0.2mm">0.2 mm</SelectItem>
+                                                        <SelectItem value="0.25mm">0.25 mm</SelectItem>
+                                                        <SelectItem value="0.3mm">0.3 mm</SelectItem>
+                                                        <SelectItem value="0.35mm">0.35 mm</SelectItem>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <SelectItem value="0.11mm" disabled>0.11 mm (N/A)</SelectItem>
+                                                        <SelectItem value="0.12mm" disabled>0.12 mm (N/A)</SelectItem>
+                                                        <SelectItem value="0.19mm">0.19 mm</SelectItem>
+                                                        <SelectItem value="0.2mm">0.2 mm</SelectItem>
+                                                    </>
+                                                )
+                                            ) : (
+                                                layerCount === "1" ? (
+                                                    <>
+                                                        <SelectItem value="0.07mm">0.07 mm</SelectItem>
+                                                        <SelectItem value="0.11mm">0.11 mm</SelectItem>
+                                                    </>
+                                                ) : layerCount === "4" ? (
+                                                    <>
+                                                        <SelectItem value="0.2mm">0.2 mm</SelectItem>
+                                                        <SelectItem value="0.25mm">0.25 mm</SelectItem>
+                                                        <SelectItem value="0.3mm">0.3 mm</SelectItem>
+                                                        <SelectItem value="0.35mm">0.35 mm</SelectItem>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <SelectItem value="0.11mm">0.11 mm</SelectItem>
+                                                        <SelectItem value="0.12mm">0.12 mm</SelectItem>
+                                                        <SelectItem value="0.2mm">0.2 mm</SelectItem>
+                                                    </>
+                                                )
+                                            )
+                                        ) : material === "Rogers" ? (
+                                            <>
+                                                <SelectItem value="0.51mm">0.51 mm</SelectItem>
+                                                <SelectItem value="0.76mm">0.76 mm</SelectItem>
+                                                <SelectItem value="1.52mm">1.52 mm</SelectItem>
+                                            </>
+                                        ) : material === "PTFE Teflon" ? (
+                                            <>
+                                                <SelectItem value="0.76mm">0.76 mm</SelectItem>
+                                                <SelectItem value="1.52mm">1.52 mm</SelectItem>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <SelectItem value="0.6mm">0.6 mm</SelectItem>
+                                                <SelectItem value="0.8mm">0.8 mm</SelectItem>
+                                                <SelectItem value="1.0mm">1.0 mm</SelectItem>
+                                                <SelectItem value="1.2mm">1.2 mm</SelectItem>
+                                                <SelectItem value="1.6mm">1.6 mm</SelectItem>
+                                                <SelectItem value="2.0mm">2.0 mm</SelectItem>
+                                            </>
+                                        )}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Coverlay Color (Flex) vs Solder Mask Color (Others) */}
+                            {material === "Flex" ? (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Coverlay Color</label>
+                                    <Select value={coverlayColor} onValueChange={setCoverlayColor} disabled={substrateType === "Transparent"}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue placeholder="Select Coverlay Color" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {substrateType === "Transparent" ? (
+                                                <SelectItem value="Transparent">Transparent</SelectItem>
+                                            ) : (
+                                                <>
+                                                    <SelectItem value="Yellow">Yellow</SelectItem>
+                                                    <SelectItem value="Black">Black</SelectItem>
+                                                    <SelectItem value="White">White</SelectItem>
+                                                </>
+                                            )}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            ) : (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Solder Mask Color</label>
+                                    <Select value={solderMask} onValueChange={(val) => {
+                                        setSolderMask(val);
+                                        const mapHex: Record<string, string> = { Green: "#52c41a", Red: "#f5222d", Blue: "#1677ff", Black: "#000000", White: "#ffffff", Yellow: "#fadb14", Purple: "#722ed1" };
+                                        setPcbColorHex(mapHex[val] || "#52c41a");
+                                    }}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue placeholder="Select Solder Mask Color" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Green">Green</SelectItem>
+                                            <SelectItem value="Purple">Purple</SelectItem>
+                                            <SelectItem value="Red">Red</SelectItem>
+                                            <SelectItem value="Yellow">Yellow</SelectItem>
+                                            <SelectItem value="Blue">Blue</SelectItem>
+                                            <SelectItem value="White">White</SelectItem>
+                                            <SelectItem value="Black">Black</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Silkscreen Color */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Silkscreen Color</label>
+                                <Select value={silkscreen} onValueChange={setSilkscreen}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue placeholder="Select Silkscreen Color" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="White">White</SelectItem>
+                                        <SelectItem value="Black">Black</SelectItem>
+                                        <SelectItem value="None">None</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Copper Type (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Copper Type</label>
+                                    <Select value={copperType} onValueChange={setCopperType}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Electro-deposited">Electro-deposited</SelectItem>
+                                            <SelectItem value="Rolled Annealed" disabled>Rolled Annealed (N/A)</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Material Type */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Material Type</label>
+                                <Select value={materialType} onValueChange={setMaterialType}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue placeholder="Select Material Type" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {material === "FR-4" ? (
+                                            <SelectItem value="FR4-TG135">FR4-TG135</SelectItem>
+                                        ) : material === "Rogers" ? (
+                                            <SelectItem value="RO4350B(Dk=3.48,Df=0.0037)">RO4350B(Dk=3.48,Df=0.0037)</SelectItem>
+                                        ) : material === "PTFE Teflon" ? (
+                                            <>
+                                                <SelectItem value="ZYF300CA-P(Dk=3.0,Df=0.0018)">ZYF300CA-P(Dk=3.0,Df=0.0018)</SelectItem>
+                                                <SelectItem value="ZYF300CA-C(Dk=2.94,Df=0.0016)">ZYF300CA-C(Dk=2.94,Df=0.0016)</SelectItem>
+                                                <SelectItem value="ZYF265D(Dk=2.65,Df=0.0019)">ZYF265D(Dk=2.65,Df=0.0019)</SelectItem>
+                                                <SelectItem value="ZYF255DA(Dk=2.55,Df=0.0018)">ZYF255DA(Dk=2.55,Df=0.0018)</SelectItem>
+                                            </>
+                                        ) : (
+                                            <SelectItem value="Polyimide (PI)">Polyimide (PI)</SelectItem>
+                                        )}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Surface Finish */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Surface Finish</label>
+                                <Select value={surfaceFinish} onValueChange={setSurfaceFinish}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue placeholder="Select Surface Finish" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {material === "Flex" ? (
+                                            <SelectItem value="ENIG">ENIG (Immersion Gold)</SelectItem>
+                                        ) : material === "Rogers" || material === "PTFE Teflon" ? (
+                                            <>
+										<SelectItem value="OSP">OSP</SelectItem>
+
+										{layerCount === "1" && (
+											<SelectItem value="Roller Tin">Roller Tin</SelectItem>
+										)}
+
+										<SelectItem value="HASL(Leaded)">HASL (Leaded)</SelectItem>
+										<SelectItem value="LeadFree HASL">LeadFree HASL</SelectItem>
+										<SelectItem value="ENIG">ENIG (Immersion Gold)</SelectItem>
+									</>
+                                        ) : (
+                                            <>
+                                                <SelectItem value="OSP">OSP</SelectItem>
+                                                <SelectItem value="HASL(Leaded)">HASL (Leaded)</SelectItem>
+                                                <SelectItem value="LeadFree HASL">LeadFree HASL</SelectItem>
+                                                <SelectItem value="ENIG">ENIG (Immersion Gold)</SelectItem>
+                                            </>
+                                        )}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Gold Thickness (when ENIG or Flex) */}
+                            {(surfaceFinish === "ENIG" || material === "Flex") && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Gold Thickness</label>
+                                    <Select value={goldThickness} onValueChange={setGoldThickness}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="1 U&quot;">1 U&quot;</SelectItem>
+                                            <SelectItem value="2 U&quot;">2 U&quot;</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Outer Copper Weight */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Outer Copper Weight</label>
+                                <Select value={copperWeight} onValueChange={setCopperWeight}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue placeholder="Select Copper Weight" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {material === "Flex" ? (
+                                            <>
+                                                <SelectItem value="0.5 oz">0.5 oz</SelectItem>
+                                                <SelectItem value="1 oz">1 oz</SelectItem>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <SelectItem value="1 oz">1 oz</SelectItem>
+                                                <SelectItem value="2 oz">2 oz</SelectItem>
+                                            </>
+                                        )}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Coverlay Thickness (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Coverlay Thickness</label>
+                                    <Select value={coverlayThickness} onValueChange={setCoverlayThickness}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="PI:12.5um/AD:15um">PI:12.5um/AD:15um</SelectItem>
+                                            <SelectItem value="PI:25um/AD:25um">PI:25um/AD:25um</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Stiffener (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Stiffener</label>
+                                    <Select value={stiffener} onValueChange={setStiffener}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Without">Without</SelectItem>
+                                            <SelectItem value="Polyimide">Polyimide</SelectItem>
+                                            <SelectItem value="FR4">FR4</SelectItem>
+                                            <SelectItem value="Stainless Steel">Stainless Steel</SelectItem>
+                                            <SelectItem value="3M Tape">3M Tape</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* EMI Shielding Film (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">EMI Shielding Film</label>
+                                    <Select value={emiShielding} onValueChange={setEmiShielding}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Without">Without</SelectItem>
+                                            <SelectItem value="Both sides ( Black, 18um )">Both sides ( Black, 18um )</SelectItem>
+                                            <SelectItem value="Single side ( Black, 18um )">Single side ( Black, 18um )</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Cutting Method (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Cutting Method</label>
+                                    <Select value={cuttingMethod} onValueChange={setCuttingMethod}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Laser Cutting">Laser Cutting</SelectItem>
+                                            <SelectItem value="Punching">Punching</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Silkscreen on Stiffener (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Silkscreen on Stiffener</label>
+                                    <Select value={silkscreenOnStiffener} onValueChange={setSilkscreenOnStiffener}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="No">No</SelectItem>
+                                            <SelectItem value="Yes">Yes</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* EDA Software (Flex Only) */}
+                            {material === "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">EDA Software</label>
+                                    <Select value={edaSoftware} onValueChange={setEdaSoftware}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="EasyEDA Pro">EasyEDA Pro</SelectItem>
+                                            <SelectItem value="Other">Other</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Via Covering (Non-Flex) */}
+                            {material !== "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Via Covering</label>
+                                    <Select value={viaCovering} onValueChange={setViaCovering}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Tented">Tented</SelectItem>
+                                            <SelectItem value="Untented">Untented</SelectItem>
+                                            <SelectItem value="Plugged">Plugged</SelectItem>
+                                            <SelectItem value="Epoxy Filled & Capped">Epoxy Filled & Capped</SelectItem>
+                                            <SelectItem value="Copper paste Filled & Capped" disabled>Copper paste Filled & Capped (N/A)</SelectItem>
+                                            <SelectItem value="Not Specified">Not Specified</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Via Plating Method (Non-Flex) */}
+                            {material !== "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Via Plating Method</label>
+                                    <Select value={viaPlating} onValueChange={setViaPlating}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Not Specified">Not Specified</SelectItem>
+                                            <SelectItem value="Conductive Adhesive">Conductive Adhesive</SelectItem>
+                                            <SelectItem value="Horizontal Electroless Copper Plating">Horizontal Electroless Copper Plating</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Min Hole Size (Non-Flex) */}
+                            {material !== "Flex" && (
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">Min Via Hole Size</label>
+                                    <Select value={minHole} onValueChange={setMinHole}>
+                                        <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="0.3mm/(0.4/0.45mm)">0.3mm / (0.4/0.45mm)</SelectItem>
+                                            <SelectItem value="0.25mm/(0.35/0.4mm)">0.25mm / (0.35/0.4mm)</SelectItem>
+                                            <SelectItem value="0.2mm/(0.3/0.35mm)">0.2mm / (0.3/0.35mm)</SelectItem>
+                                            <SelectItem value="0.15mm/(0.25/0.3mm)">0.15mm / (0.25/0.3mm)</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            {/* Electrical Test */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Electrical Test</label>
+                                <Select value={elecTest} onValueChange={setElecTest}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="Flying Probe Fully Test">Flying Probe Fully Test</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            {/* Mark on PCB */}
+                            <div>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1">Mark on PCB</label>
+                                <Select value={markOnPcb} onValueChange={setMarkOnPcb}>
+                                    <SelectTrigger className="w-full h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="Remove Mark">Remove Mark</SelectItem>
+                                        <SelectItem value="2D barcode (Serial Number)">2D barcode (Serial Number)</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+
+                        {/* Additional Boolean Badges Grid */}
+                        <div className="pt-3 border-t border-border/60">
+                            <h4 className="text-xs font-bold text-muted-foreground mb-2.5">High-Spec & Quality Options</h4>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                {[
+                                    { label: "Gold Fingers", state: goldFingers, setState: setGoldFingers, disabled: false },
+                                    { label: "Castellated Holes", state: castellated, setState: setCastellated, disabled: material === "Flex" },
+                                    { label: "Edge Plating", state: edgePlating, setState: setEdgePlating, disabled: true },
+                                    { label: "Blind Slots", state: blindSlots, setState: setBlindSlots, disabled: material === "Flex" },
+                                    { label: "Humidity Card", state: humidity, setState: setHumidity, disabled: false },
+                                    { label: "Kelvin Test", state: kelvinTest, setState: setKelvinTest, disabled: false },
+                                    { label: "Paper Between PCBs", state: paperBetween, setState: setPaperBetween, disabled: false },
+                                    { label: "Confirm Production File", state: confirmFile, setState: setConfirmFile, disabled: false }
+                                ].map((opt, idx) => (
+                                    <label key={idx} className={`flex items-center gap-2 p-2 rounded-xl border border-border/60 select-none ${opt.disabled ? 'opacity-50 cursor-not-allowed bg-muted/10' : 'bg-muted/20 hover:bg-muted/40 cursor-pointer'}`}>
+                                        <input
+                                            type="checkbox"
+                                            disabled={opt.disabled}
+                                            checked={opt.state === "Yes"}
+                                            onChange={(e) => !opt.disabled && opt.setState(e.target.checked ? "Yes" : "No")}
+                                            className="w-4 h-4 rounded text-emerald-500 focus:ring-emerald-500 cursor-pointer"
+                                        />
+                                        <span className="text-xs font-semibold text-foreground">{opt.label}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Special PCB Remarks */}
+                        <div className="pt-2">
+                            <label className="text-xs font-bold text-muted-foreground block mb-1">PCB Remarks / Custom Specifications</label>
+                            <Input
+                                type="text"
+                                placeholder="Add optional manufacturing remarks or instructions..."
+                                value={pcbRemark}
+                                onChange={(e) => setPcbRemark(e.target.value)}
+                                className="h-10 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-medium text-foreground"
+                            />
+                        </div>
+                    </div>
+                    {/* Section 3: Gerber File Selection / Upload Section */}
+                    <div className="bg-card border border-border/80 rounded-xl p-6 shadow-xs space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-border/60 pb-3 gap-2">
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <h3 className="text-sm font-bold text-foreground">3. Gerber File Selection / Upload</h3>
+                                    <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                        Optional
+                                    </span>
+                                </div>
+                                <p className="text-xs text-muted-foreground font-medium mt-0.5">
+                                    You can upload a Gerber ZIP/RAR file, or continue without one.
+                                </p>
+                            </div>
+                            {clientGerberFiles.length > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setGerberMode("select");
+                                            if (clientGerberFiles.length > 0 && !selectedGerberFileId) {
+                                                setSelectedGerberFileId(clientGerberFiles[0].id.toString());
+                                            }
+                                        }}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${gerberMode === "select" ? "bg-emerald-500 text-white shadow-xs" : "bg-muted/50 hover:bg-muted text-muted-foreground"}`}
+                                    >
+                                        Select Existing File ({clientGerberFiles.length})
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setGerberMode("upload")}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${gerberMode === "upload" ? "bg-emerald-500 text-white shadow-xs" : "bg-muted/50 hover:bg-muted text-muted-foreground"}`}
+                                    >
+                                        + Upload New File
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        {loadingClientGerbers ? (
+                            <div className="p-6 flex items-center justify-center gap-2 text-xs font-bold text-muted-foreground">
+                                <RefreshCw className="w-4 h-4 animate-spin text-emerald-500" />
+                                Checking client Gerber files...
+                            </div>
+                        ) : gerberMode === "select" && clientGerberFiles.length > 0 ? (
+                            <div className="space-y-4">
+                                <div className="space-y-3">
+                                    <label className="text-xs font-bold text-muted-foreground block">Select Existing Gerber File for Client</label>
+                                    <Select
+                                        value={selectedGerberFileId}
+                                        onValueChange={(val) => setSelectedGerberFileId(val)}
+                                    >
+                                        <SelectTrigger className="w-full h-11 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground">
+                                            <SelectValue placeholder="Choose a Gerber file" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {clientGerberFiles.map((gf) => (
+                                                <SelectItem key={gf.id} value={gf.id.toString()} className="text-xs">
+                                                    <div className="flex items-center gap-2">
+                                                        <FileArchive className="w-4 h-4 text-emerald-500 shrink-0" />
+                                                        <span className="font-bold">{gf.original_name || gf.file_name}</span>
+                                                        <span className="text-muted-foreground">({gf.file_size || 'N/A'}) — {new Date(gf.created_at).toLocaleDateString()}</span>
+                                                    </div>
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+
+                                    <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                                        <div className="flex items-center gap-2">
+                                            <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                                            <span>Selected Gerber file will be linked to this new order upon submission.</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setGerberMode("upload")}
+                                            className="text-xs font-bold underline hover:text-emerald-800 dark:hover:text-emerald-100 cursor-pointer"
+                                        >
+                                            Upload New File Instead
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Front & Back PCB Preview Grid for Selected Existing File */}
+                                {(topSvg || bottomSvg) && (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                                        <GerberPreviewImageCard
+                                            title="Front Side Preview (Top)"
+                                            src={topSvg}
+                                            isProcessing={false}
+                                        />
+                                        <GerberPreviewImageCard
+                                            title="Back Side Preview (Bottom)"
+                                            src={bottomSvg}
+                                            isProcessing={false}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        ) : !gerberFile ? (
+                            /* Upload Zone */
+                            <div className="border-2 border-dashed border-border/80 hover:border-emerald-500/50 rounded-xl p-10 flex flex-col items-center justify-center text-center transition-colors bg-muted/10">
+                                <FileArchive className="w-12 h-12 text-emerald-500 mb-3" />
+                                <div className="space-y-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="px-6 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs inline-flex items-center gap-2 shadow-sm transition-all cursor-pointer"
+                                    >
+                                        <Upload className="w-4 h-4" />
+                                        Add Gerber File
+                                    </button>
+                                    <p className="text-xs text-muted-foreground">Only accept zip or rar archives, Max 100 MB</p>
+                                </div>
+                            </div>
+                        ) : (
+                            /* File Uploaded / Uploading & Preview Card */
+                            <div className="space-y-4">
+                                <div className={`p-4 rounded-xl transition-all ${isValidating ? 'bg-amber-500/10 border border-amber-500/30' : 'bg-emerald-500/10 border border-emerald-500/30'} flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4`}>
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2.5 rounded-xl ${isValidating ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'}`}>
+                                            {isValidating ? (
+                                                <RefreshCw className="w-6 h-6 animate-spin text-amber-500" />
+                                            ) : (
+                                                <CheckCircle2 className="w-6 h-6 text-emerald-500" />
+                                            )}
+                                        </div>
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <h4 className="text-sm font-extrabold text-foreground">{gerberFile.name}</h4>
+                                                {isValidating ? (
+                                                    <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-500 text-white animate-pulse flex items-center gap-1.5">
+                                                        <RefreshCw className="w-3 h-3 animate-spin" />
+                                                        Processing Gerber
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-500 text-white">
+                                                        Gerber Processed
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <p className="text-xs text-muted-foreground font-medium mt-0.5">
+                                                {isValidating ? (
+                                                    <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1.5">
+                                                        Size: {(gerberFile.size / (1024 * 1024)).toFixed(2)} MB • Extracting Gerber layers & generating preview...
+                                                    </span>
+                                                ) : (
+                                                    <span>
+                                                        Size: {(gerberFile.size / (1024 * 1024)).toFixed(2)} MB • Extracted: {layerCount} Layers ({boardWidth} x {boardLength} mm)
+                                                    </span>
+                                                )}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                            type="button"
+                                            disabled={isValidating}
+                                            onClick={() => fileInputRef.current?.click()}
+                                            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-bold transition-colors cursor-pointer ${isValidating ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                        >
+                                            <RotateCcw className={`w-3.5 h-3.5 text-emerald-500 ${isValidating ? 'animate-spin' : ''}`} />
+                                            Re-upload
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={isValidating}
+                                            onClick={() => {
+                                                setGerberFile(null);
+                                                setUploadedGerberFileId(null);
+                                                setTopSvg("");
+                                                setBottomSvg("");
+                                                setDetectionAlert(null);
+                                                setDetectedLayers([]);
+                                            }}
+                                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-bold transition-colors cursor-pointer ${isValidating ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                        >
+                                            <X className="w-3.5 h-3.5" />
+                                            Remove
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Front & Back PCB Preview Grid */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                                    <GerberPreviewImageCard
+                                        title="Front Side Preview (Top)"
+                                        src={topSvg}
+                                        isProcessing={isValidating}
+                                    />
+                                    <GerberPreviewImageCard
+                                        title="Back Side Preview (Bottom)"
+                                        src={bottomSvg}
+                                        isProcessing={isValidating}
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Section 4: Financials & Payment Record (Including Integrated Delivery Calendar) */}
+                    <div className="bg-card border border-border/80 rounded-xl p-6 shadow-xs space-y-5">
+                        <div className="flex items-center gap-2.5 border-b border-border/60 pb-3">
+                            <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500">
+                                <CreditCard className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <h3 className="text-sm font-bold text-foreground">4. Financials & Payment Record</h3>
+                                <p className="text-xs text-muted-foreground font-medium">Select delivery lead time, review calculated pricing, set expected delivery date, and record manual payment</p>
+                            </div>
+                        </div>
+
+                        {/* Side-by-Side: 1. Delivery Calendar & 2. Pricing / Manual Method */}
+                        {(() => {
+                            const unitMult = dimensionUnit === "inches" ? 25.4 : 1;
+                            const lengthMm = (parseFloat(boardWidth) || 100) * unitMult;
+                            const widthMm = (parseFloat(boardLength) || 100) * unitMult;
+                            const qtyPcs = Math.max(1, parseInt(quantity, 10) || 1);
+                            const areaPerBoardSqm = (lengthMm * widthMm) / 1000000;
+                            const totalAreaSqm = areaPerBoardSqm * qtyPcs;
+
+                            const parsedManual = parseFloat(manualPrice);
+                            const hasManualOverride = !isNaN(parsedManual) && parsedManual >= 0 && manualPrice.trim() !== "";
+
+                            let subtotalCalc = 0;
+                            let pricingModeLabel = "";
+
+                            if (hasManualOverride) {
+                                subtotalCalc = parsedManual;
+                                pricingModeLabel = `Manual Price Override (Base: ₹${parsedManual.toFixed(2)})`;
+                            } else if (pricingMethod === "pcb_rate") {
+                                subtotalCalc = (parseFloat(pcbRate) || 0) * qtyPcs;
+                                pricingModeLabel = `PCB Rate (₹${pcbRate} × ${qtyPcs} pcs)`;
+                            } else if (pricingMethod === "price_per_sqm") {
+                                subtotalCalc = (parseFloat(pricePerSqm) || 0) * totalAreaSqm;
+                                pricingModeLabel = `Price per SQM (₹${pricePerSqm} × ${totalAreaSqm.toFixed(4)} m²)`;
+                            } else {
+                                subtotalCalc = parseFloat(orderValue) || 0;
+                                pricingModeLabel = "Automatic Lead-Time Matrix";
+                            }
+
+                            const gstAmt = subtotalCalc * (gstRate / 100);
+                            const totalAmt = subtotalCalc + gstAmt;
+                            const unitPriceCalc = qtyPcs > 0 ? (subtotalCalc / qtyPcs) : 0;
+                            const unitPriceWithGst = qtyPcs > 0 ? (totalAmt / qtyPcs) : 0;
+
+                            const uniqueMonths = Array.from(new Set(deliveryCalendarDays.map((item) => item.fullMonthYear)));
+                            const calendarHeaderTitle = uniqueMonths.length > 1
+                                ? `${uniqueMonths[0]} - ${uniqueMonths[uniqueMonths.length - 1]}`
+                                : uniqueMonths[0] || new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+
+                            const selectedDayItem = deliveryCalendarDays.find((item) => item.isoDateStr === deliveryDate);
+
+                            const getCardDisplayPrice = (autoOrderVal: string) => {
+                                if (hasManualOverride) {
+                                    return `₹${parsedManual.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                                }
+                                if (pricingMethod === "pcb_rate") {
+                                    const sub = (parseFloat(pcbRate) || 0) * qtyPcs;
+                                    return `₹${sub.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                                }
+                                if (pricingMethod === "price_per_sqm") {
+                                    const sub = (parseFloat(pricePerSqm) || 0) * totalAreaSqm;
+                                    return `₹${sub.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                                }
+                                return `₹${parseFloat(autoOrderVal).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                            };
+
+                            return (
+                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                                    {/* Left Column: Delivery Calendar (7 Cols on lg) */}
+                                    <div className="lg:col-span-7 bg-muted/20 border border-border/80 p-3.5 sm:p-4 rounded-xl space-y-2.5">
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 border-b border-border/60 gap-1.5">
+                                            <div className="flex items-center gap-2">
+                                                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block ring-2 ring-emerald-500/30 animate-pulse" />
+                                                <h4 className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                                                    <CalendarDays className="w-3.5 h-3.5" />
+                                                    Delivery Date & Lead Time Calendar
+                                                </h4>
+                                            </div>
+                                            <div className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-md text-[11px] font-bold border border-emerald-500/30 self-start sm:self-auto">
+                                                {calendarHeaderTitle}
+                                            </div>
+                                        </div>
+
+                                        {/* Status & Legend */}
+                                        <div className="flex flex-wrap items-center justify-between text-[10.5px] text-muted-foreground gap-1.5">
+                                            <span className="font-medium">Select delivery schedule date:</span>
+                                            <div className="flex items-center gap-2.5">
+                                                <span className="flex items-center gap-1 font-bold text-emerald-700 dark:text-emerald-400">
+                                                    <span className="w-2 h-2 rounded-full bg-emerald-500" /> Selected
+                                                </span>
+                                                <span className="flex items-center gap-1 font-bold text-slate-700 dark:text-slate-300">
+                                                    <span className="w-2 h-2 rounded-full bg-slate-400" /> Sunday
+                                                </span>
+                                                <span className="flex items-center gap-1 font-bold text-amber-800 dark:text-amber-400">
+                                                    <span className="w-2 h-2 rounded-full bg-amber-500" /> Holiday
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        {/* 20-Day Interactive Grid: Compact 5-column layout */}
+                                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                                            {deliveryCalendarDays.map((item) => {
+                                                const isSelected = deliveryDate === item.isoDateStr && !item.isUnavailable;
+
+                                                if (item.isSunday) {
+                                                    return (
+                                                        <div
+                                                            key={item.day}
+                                                            aria-disabled="true"
+                                                            title={`${item.formattedDate} - Sunday - Unavailable`}
+                                                            className="p-1.5 sm:p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 text-center select-none flex flex-col justify-between cursor-not-allowed h-[72px] sm:h-[76px]"
+                                                        >
+                                                            <div className="flex items-center justify-between text-[10px] font-extrabold uppercase leading-none text-slate-700 dark:text-slate-300">
+                                                                <span>{item.weekday}</span>
+                                                                <span className="text-[8.5px] font-black text-slate-500 dark:text-slate-400 bg-slate-200 dark:bg-slate-700 px-1 py-0.2 rounded">Off</span>
+                                                            </div>
+                                                            <div className="flex items-baseline justify-center gap-1 my-auto">
+                                                                <span className="text-base sm:text-lg font-black leading-none text-slate-800 dark:text-slate-200 line-through decoration-slate-400 decoration-2">{item.dateNum}</span>
+                                                                <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 leading-none">{item.monthStr}</span>
+                                                            </div>
+                                                            <div className="pt-1 border-t border-slate-300/80 dark:border-slate-700 flex justify-center">
+                                                                <span className="text-[8.5px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 bg-slate-200/90 dark:bg-slate-700 px-1.5 py-0.2 rounded-sm leading-tight">
+                                                                    Sunday
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+
+                                                if (item.isHoliday) {
+                                                    return (
+                                                        <div
+                                                            key={item.day}
+                                                            aria-disabled="true"
+                                                            title={`${item.formattedDate} - ${item.holidayName || "Public Holiday"} - Unavailable`}
+                                                            className="p-1.5 sm:p-2 rounded-lg border-2 border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/40 text-center select-none flex flex-col justify-between cursor-not-allowed h-[72px] sm:h-[76px]"
+                                                        >
+                                                            <div className="flex items-center justify-between text-[10px] font-black uppercase leading-none text-amber-900 dark:text-amber-200">
+                                                                <span>{item.weekday}</span>
+                                                                <span className="text-[8.5px] font-black text-amber-800 dark:text-amber-300 bg-amber-200/80 dark:bg-amber-900 px-1 py-0.2 rounded">Holiday</span>
+                                                            </div>
+                                                            <div className="flex items-baseline justify-center gap-1 my-auto">
+                                                                <span className="text-base sm:text-lg font-black leading-none text-amber-950 dark:text-amber-100">{item.dateNum}</span>
+                                                                <span className="text-[10px] font-bold text-amber-800 dark:text-amber-300 leading-none">{item.monthStr}</span>
+                                                            </div>
+                                                            <div className="pt-1 border-t border-amber-300 dark:border-amber-800 flex justify-center" title={item.holidayName || "Holiday"}>
+                                                                <span className="text-[8.5px] font-black uppercase tracking-tight text-white bg-amber-700 dark:bg-amber-600 px-1.5 py-0.2 rounded-sm truncate max-w-full leading-tight">
+                                                                    {item.holidayName || "Holiday"}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+
+                                                if (item.isUnavailable) {
+                                                    return (
+                                                        <div
+                                                            key={item.day}
+                                                            aria-disabled="true"
+                                                            title={`${item.formattedDate} - Unavailable for this order area/specifications`}
+                                                            className="p-1.5 sm:p-2 rounded-lg border border-border/80 bg-muted/30 text-center select-none flex flex-col justify-between cursor-not-allowed h-[72px] sm:h-[76px]"
+                                                        >
+                                                            <div className="text-[10px] font-bold uppercase leading-none text-muted-foreground">{item.weekday}</div>
+                                                            <div className="flex items-baseline justify-center gap-1 my-auto">
+                                                                <span className="text-base sm:text-lg font-black leading-none text-muted-foreground line-through">{item.dateNum}</span>
+                                                                <span className="text-[10px] font-bold text-muted-foreground leading-none">{item.monthStr}</span>
+                                                            </div>
+                                                            <div className="pt-1 border-t border-border/60 text-[9px] font-black text-muted-foreground">
+                                                                N/A
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+
+                                                return (
+                                                    <div
+                                                        key={item.day}
+                                                        onClick={() => {
+                                                            setDeliveryDate(item.isoDateStr);
+                                                            setSelectedDay(item.day);
+                                                            setOrderValue(item.orderValue);
+                                                            setUnitPrice(item.unitPrice);
+                                                        }}
+                                                        title={`${item.formattedDate} (${item.weekday}) • ${item.workingDayNum} Working Days • Base: ₹${parseFloat(item.orderValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })} (₹${(parseFloat(item.orderValue) / qtyPcs).toFixed(2)}/pc)`}
+                                                        className={`p-1.5 sm:p-2 rounded-lg border text-center transition-all cursor-pointer select-none flex flex-col justify-between h-[72px] sm:h-[76px] ${
+                                                            isSelected
+                                                                ? "bg-emerald-600 text-white border-2 border-emerald-700 shadow-sm ring-2 ring-emerald-500/40 z-10"
+                                                                : "bg-card hover:bg-emerald-500/10 border-border/90 hover:border-emerald-500/60 text-foreground"
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center justify-between text-[10px] font-extrabold uppercase leading-none">
+                                                            <span className={isSelected ? "text-white" : "text-slate-700 dark:text-slate-200"}>{item.weekday}</span>
+                                                            {isSelected ? (
+                                                                <span className="bg-white/25 p-0.5 rounded-full"><Check className="w-2.5 h-2.5 text-white stroke-[3]" /></span>
+                                                            ) : (
+                                                                <span className="text-[8.5px] font-black text-emerald-800 dark:text-emerald-200 bg-emerald-100/80 dark:bg-emerald-950/60 px-1 py-0.2 rounded border border-emerald-300/40">
+                                                                    W{item.workingDayNum}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex items-baseline justify-center gap-1 my-auto">
+                                                            <span className={`text-base sm:text-lg font-black leading-none ${isSelected ? "text-white" : "text-foreground"}`}>
+                                                                {item.dateNum}
+                                                            </span>
+                                                            <span className={`text-[10px] font-bold leading-none ${isSelected ? "text-emerald-100" : "text-muted-foreground"}`}>
+                                                                {item.monthStr}
+                                                            </span>
+                                                        </div>
+                                                        <div className={`pt-1 border-t text-[11px] font-black font-mono leading-none truncate ${
+                                                            isSelected ? "border-white/25 text-white" : "border-border/60 text-emerald-700 dark:text-emerald-400"
+                                                        }`}>
+                                                            {getCardDisplayPrice(item.orderValue)}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {/* Calendar Selection Banner */}
+                                        <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 text-xs">
+                                            <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200">
+                                                <CalendarDays className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
+                                                {selectedDayItem ? (
+                                                    <span className="text-slate-700 dark:text-slate-300 font-medium">
+                                                        Selected Delivery: <b className="font-black text-slate-950 dark:text-white">{selectedDayItem.formattedDate} ({selectedDayItem.weekday})</b> • Lead Time: <b className="font-black text-slate-950 dark:text-white">{selectedDayItem.workingDayNum} Working Days</b>
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-slate-700 dark:text-slate-300 font-medium">
+                                                        Delivery Date: <b className="font-black text-slate-950 dark:text-white">{deliveryDate || "Not Selected"}</b>
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {selectedDayItem && (
+                                                <div className="flex flex-wrap items-center gap-3">
+                                                    <span className="font-mono text-slate-700 dark:text-slate-300 text-xs">
+                                                        Per Piece: <b className="text-emerald-800 dark:text-emerald-300 font-black">₹{(parseFloat(selectedDayItem.orderValue) / qtyPcs).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>
+                                                    </span>
+                                                    <span className="font-mono font-black text-slate-900 dark:text-slate-100">
+                                                        Matrix Base: <span className="text-emerald-800 dark:text-emerald-300">₹{parseFloat(selectedDayItem.orderValue).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Right Column: Pricing & Manual Method Controls (5 Cols on lg) */}
+                                    <div className="lg:col-span-5 space-y-3">
+                                        <div className="bg-muted/20 border border-border/80 p-3.5 sm:p-4 rounded-xl space-y-3">
+                                            <div className="flex items-center justify-between border-b border-border/60 pb-2">
+                                                <div className="flex items-center gap-2">
+                                                    <Sliders className="w-4 h-4 text-emerald-500" />
+                                                    <h4 className="text-xs font-black uppercase tracking-wider text-foreground">
+                                                        Pricing & Manual Method
+                                                    </h4>
+                                                </div>
+                                                <span className="text-[10px] font-black text-emerald-900 dark:text-emerald-200 bg-emerald-100 dark:bg-emerald-900/60 px-2 py-0.5 rounded-full border border-emerald-300 dark:border-emerald-700">
+                                                    {pricingMethod === "auto" && !hasManualOverride ? "Auto Matrix" : hasManualOverride ? "Manual Override" : pricingMethod === "pcb_rate" ? "PCB Rate" : "SQM Rate"}
+                                                </span>
+                                            </div>
+
+                                            {/* Pricing Method Selector */}
+                                            <div>
+                                                <label className="text-xs font-bold text-muted-foreground block mb-1">Pricing Mode</label>
+                                                <div className="grid grid-cols-3 gap-1 bg-muted/40 p-1 rounded-lg border border-border/60">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setPricingMethod("auto")}
+                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                                                            pricingMethod === "auto"
+                                                                ? "bg-emerald-500 text-white shadow-xs"
+                                                                : "text-muted-foreground hover:bg-muted"
+                                                        }`}
+                                                    >
+                                                        Auto (Matrix)
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setPricingMethod("pcb_rate")}
+                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                                                            pricingMethod === "pcb_rate"
+                                                                ? "bg-emerald-500 text-white shadow-xs"
+                                                                : "text-muted-foreground hover:bg-muted"
+                                                        }`}
+                                                    >
+                                                        PCB Rate
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setPricingMethod("price_per_sqm")}
+                                                        className={`py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                                                            pricingMethod === "price_per_sqm"
+                                                                ? "bg-emerald-500 text-white shadow-xs"
+                                                                : "text-muted-foreground hover:bg-muted"
+                                                        }`}
+                                                    >
+                                                        SQM Rate
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Conditional Rate Inputs */}
+                                            {pricingMethod === "pcb_rate" && (
+                                                <div className="p-2.5 rounded-lg bg-card border border-border/80 space-y-1">
+                                                    <div className="flex items-center justify-between">
+                                                        <label className="text-xs font-bold text-muted-foreground">PCB Rate (₹ / pc)</label>
+                                                        <span className="text-[11px] font-mono text-muted-foreground">{qtyPcs} pcs</span>
+                                                    </div>
+                                                    <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        value={pcbRate}
+                                                        onChange={(e) => setPcbRate(e.target.value)}
+                                                        className="w-full h-8.5 rounded-md bg-background border-border/80 text-xs font-mono font-bold text-foreground"
+                                                        placeholder="Rate per board"
+                                                    />
+                                                    <p className="text-[10px] text-muted-foreground">
+                                                        ₹{pcbRate || 0} × {qtyPcs} = <b className="text-foreground">₹{((parseFloat(pcbRate) || 0) * qtyPcs).toFixed(2)}</b>
+                                                    </p>
+                                                </div>
+                                            )}
+
+                                            {pricingMethod === "price_per_sqm" && (
+                                                <div className="p-2.5 rounded-lg bg-card border border-border/80 space-y-1">
+                                                    <div className="flex items-center justify-between">
+                                                        <label className="text-xs font-bold text-muted-foreground">Price per SQM (₹ / m²)</label>
+                                                        <span className="text-[11px] font-mono text-muted-foreground">{totalAreaSqm.toFixed(4)} m²</span>
+                                                    </div>
+                                                    <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        value={pricePerSqm}
+                                                        onChange={(e) => setPricePerSqm(e.target.value)}
+                                                        className="w-full h-8.5 rounded-md bg-background border-border/80 text-xs font-mono font-bold text-foreground"
+                                                        placeholder="Rate per SQM"
+                                                    />
+                                                    <p className="text-[10px] text-muted-foreground">
+                                                        {totalAreaSqm.toFixed(4)} m² × ₹{pricePerSqm || 0} = <b className="text-foreground">₹{((parseFloat(pricePerSqm) || 0) * totalAreaSqm).toFixed(2)}</b>
+                                                    </p>
+                                                </div>
+                                            )}
+
+                                            {/* Manual Base PCB Price Override */}
+                                            <div className="p-2.5 rounded-lg bg-card border border-border/80 space-y-1">
+                                                <div className="flex items-center justify-between">
+                                                    <label className="text-xs font-bold text-muted-foreground">Manual Base PCB Price</label>
+                                                    {hasManualOverride ? (
+                                                        <span className="text-[9.5px] font-bold text-amber-700 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                                                            Override Active
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-[9.5px] text-muted-foreground font-medium">Optional</span>
+                                                    )}
+                                                </div>
+                                                <div className="relative">
+                                                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-muted-foreground">₹</span>
+                                                    <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        value={manualPrice}
+                                                        onChange={(e) => setManualPrice(e.target.value)}
+                                                        className="w-full h-8.5 pl-6 pr-7 rounded-md bg-background border-border/80 text-xs font-mono font-bold text-foreground focus:ring-amber-500"
+                                                        placeholder="Direct subtotal override"
+                                                    />
+                                                    {manualPrice && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setManualPrice("")}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-foreground p-0.5 cursor-pointer"
+                                                            title="Clear manual override"
+                                                        >
+                                                            ✕
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* Manual Expected Delivery Date Override & GST */}
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                                <div className="p-2.5 rounded-lg bg-card border border-border/80 space-y-1">
+                                                    <div className="flex items-center justify-between">
+                                                        <label className="text-xs font-bold text-muted-foreground">Delivery Date</label>
+                                                        {selectedDayItem ? (
+                                                            <span className="text-[9px] font-bold text-emerald-700 dark:text-emerald-400">
+                                                                Synced
+                                                            </span>
+                                                        ) : deliveryDate ? (
+                                                            <span className="text-[9px] font-bold text-blue-600 dark:text-blue-400">
+                                                                Custom
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
+                                                    <Input
+                                                        type="date"
+                                                        value={deliveryDate}
+                                                        onChange={(e) => {
+                                                            const val = e.target.value;
+                                                            setDeliveryDate(val);
+                                                            const match = deliveryCalendarDays.find((d) => d.isoDateStr === val);
+                                                            if (match && !match.isUnavailable) {
+                                                                setSelectedDay(match.day);
+                                                                setOrderValue(match.orderValue);
+                                                                setUnitPrice(match.unitPrice);
+                                                            }
+                                                        }}
+                                                        className="w-full h-8.5 rounded-md bg-background border-border/80 text-xs font-semibold text-foreground"
+                                                    />
+                                                </div>
+
+                                                <div className="p-2.5 rounded-lg bg-card border border-border/80 space-y-1">
+                                                    <label className="text-xs font-bold text-muted-foreground block">GST Rate</label>
+                                                    <Select value={gstRate.toString()} onValueChange={(val) => setGstRate(Number(val))}>
+                                                        <SelectTrigger className="w-full h-8.5 rounded-md bg-background border-border/80 text-xs font-bold text-foreground">
+                                                            <SelectValue placeholder="Select GST" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {gstOptionsList.map((rate) => (
+                                                                <SelectItem key={rate} value={rate.toString()}>
+                                                                    {rate}% GST
+                                                                </SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </div>
+                                            </div>
+
+                                            {/* Financial Summary Card */}
+                                            <div className="bg-emerald-50/80 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 p-3 rounded-lg space-y-2 text-xs">
+                                                <div className="font-bold text-foreground text-xs border-b border-emerald-200 dark:border-emerald-800/80 pb-1.5 flex justify-between items-center">
+                                                    <span className="flex items-center gap-1.5 text-slate-900 dark:text-slate-100 font-black">
+                                                        <Calculator className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
+                                                        Financial Summary
+                                                    </span>
+                                                    <span className="text-[10px] font-black text-emerald-900 dark:text-emerald-200 bg-emerald-200/80 dark:bg-emerald-900/80 px-2 py-0.5 rounded-full border border-emerald-300 dark:border-emerald-700">
+                                                        Live Total
+                                                    </span>
+                                                </div>
+                                                <div className="space-y-1.5 pt-0.5">
+                                                    <div className="flex justify-between items-center text-slate-600 dark:text-slate-400 font-semibold text-[11px]">
+                                                        <span>Subtotal (Base PCB):</span>
+                                                        <span className="font-mono font-bold text-slate-900 dark:text-slate-100">
+                                                            ₹{subtotalCalc.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center text-slate-600 dark:text-slate-400 font-semibold text-[11px]">
+                                                        <span className="flex items-center gap-1">
+                                                            Per Piece Price (Unit Price):
+                                                            <span className="text-[9.5px] font-normal text-muted-foreground">({qtyPcs} {qtyPcs === 1 ? "pc" : "pcs"})</span>
+                                                        </span>
+                                                        <span className="font-mono font-bold text-emerald-800 dark:text-emerald-300">
+                                                            ₹{unitPriceCalc.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-[9.5px] text-muted-foreground font-normal">/ pc</span>
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center text-slate-600 dark:text-slate-400 font-semibold text-[11px]">
+                                                        <span>GST ({gstRate}%):</span>
+                                                        <span className="font-mono font-bold text-slate-900 dark:text-slate-100">
+                                                            ₹{gstAmt.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center pt-1.5 border-t border-emerald-200 dark:border-emerald-800/80">
+                                                        <div>
+                                                            <span className="font-black text-xs text-slate-900 dark:text-slate-100 block">Final Order Total:</span>
+                                                            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                                                                (₹{unitPriceWithGst.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / pc with GST)
+                                                            </span>
+                                                        </div>
+                                                        <span className="font-mono font-black text-emerald-800 dark:text-emerald-300 text-base">
+                                                            ₹{totalAmt.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+
+                        {/* Manual Payment Section */}
+                        <div className="pt-3 border-t border-border/60 space-y-3">
+                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={paymentCompleted}
+                                    onChange={(e) => {
+                                        setPaymentCompleted(e.target.checked);
+                                        if (e.target.checked) setPaymentMethod("Manual Payment");
+                                    }}
+                                    className="w-4 h-4 rounded text-emerald-500 focus:ring-emerald-500 border-border/80 bg-muted/30 cursor-pointer"
+                                />
+                                <span className="text-xs font-bold text-foreground">Mark Payment Completed Manually</span>
+                            </label>
+
+                            {(paymentCompleted || paymentMethod === "Manual Payment") && (
+                                <div className="space-y-3 bg-muted/20 border border-border/80 p-4 rounded-xl">
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                        <div>
+                                            <label className="text-xs font-bold text-muted-foreground block mb-1">Payment Method</label>
+                                            <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                                                <SelectTrigger className="w-full h-10 rounded-xl bg-card border-border/80 text-xs font-semibold text-foreground">
+                                                    <SelectValue placeholder="Select Payment Method" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="Manual Payment">Manual Payment (Admin Record)</SelectItem>
+                                                    <SelectItem value="Bank Transfer / NEFT">Bank Transfer / NEFT / RTGS</SelectItem>
+                                                    <SelectItem value="Cash / Admin Manual">Cash / Admin Manual</SelectItem>
+                                                    <SelectItem value="UPI / QR">UPI / QR Code</SelectItem>
+                                                    <SelectItem value="Razorpay Online">Razorpay Online</SelectItem>
+                                                    <SelectItem value="Credit / Debit Card">Credit / Debit Card</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+
+                                        <div>
+                                            <label className="text-xs font-bold text-muted-foreground block mb-1">Payment Reference / Txn ID</label>
+                                            <Input
+                                                type="text"
+                                                value={paymentReference}
+                                                onChange={(e) => setPaymentReference(e.target.value)}
+                                                className="w-full h-10 rounded-xl bg-card border-border/80 text-xs font-mono font-semibold text-foreground"
+                                                placeholder="Auto-generated if empty"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-xs font-bold text-muted-foreground block mb-1">Payment Date</label>
+                                            <Input
+                                                type="date"
+                                                value={paymentDate}
+                                                onChange={(e) => setPaymentDate(e.target.value)}
+                                                className="w-full h-10 rounded-xl bg-card border-border/80 text-xs font-semibold text-foreground"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-muted-foreground block mb-1">Payment Notes / Remarks</label>
+                                        <Input
+                                            type="text"
+                                            value={paymentNotes}
+                                            onChange={(e) => setPaymentNotes(e.target.value)}
+                                            className="w-full h-10 rounded-xl bg-card border-border/80 text-xs font-semibold text-foreground"
+                                            placeholder="Optional notes regarding manual payment transaction..."
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Submit Bar */}
+                    <div className="flex items-center justify-end gap-3 pt-4 border-t border-border/80">
+                        <Link
+                            href="/orders"
+                            className="px-5 py-2.5 bg-muted hover:bg-muted/80 text-foreground rounded-xl text-xs font-bold transition-colors"
+                        >
+                            Cancel
+                        </Link>
+
+                        <button
+                            type="submit"
+                            disabled={submitting}
+                            className="flex items-center gap-2 px-6 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all shadow-xs disabled:opacity-50 cursor-pointer"
+                        >
+                            {submitting ? (
+                                <>
+                                    <RefreshCw className="w-4 h-4 animate-spin" />
+                                    Creating Order...
+                                </>
+                            ) : (
+                                <>
+                                    <CheckCircle2 className="w-4 h-4" />
+                                    Submit & Create Order
+                                </>
+                            )}
+                        </button>
+                    </div>
+                </form>
+
+                {/* Quick Add Client Modal */}
+                {quickAddOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+                        <div className="bg-card border border-border/80 rounded-2xl w-full max-w-lg p-6 space-y-5 shadow-2xl">
+                            <div className="flex items-center justify-between border-b border-border/60 pb-3">
+                                <div className="flex items-center gap-2.5">
+                                    <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500">
+                                        <UserPlus className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-base font-extrabold text-foreground">Quick Add Client</h3>
+                                        <p className="text-xs text-muted-foreground font-medium">Add minimum required client details</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setQuickAddOpen(false)}
+                                    className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+
+                            <form onSubmit={handleQuickAddClient} className="space-y-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="text-xs font-bold text-muted-foreground block mb-1">
+                                            First Name <span className="text-red-500">*</span>
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            placeholder="First Name"
+                                            value={newClientFirstName}
+                                            onChange={(e) => setNewClientFirstName(e.target.value)}
+                                            required
+                                            className="h-9 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-muted-foreground block mb-1">
+                                            Last Name
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            placeholder="Last Name"
+                                            value={newClientLastName}
+                                            onChange={(e) => setNewClientLastName(e.target.value)}
+                                            className="h-9 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="text-xs font-bold text-muted-foreground block mb-1">
+                                        Email Address
+                                    </label>
+                                    <Input
+                                        type="email"
+                                        placeholder="client@example.com"
+                                        value={newClientEmail}
+                                        onChange={(e) => setNewClientEmail(e.target.value)}
+                                        className="h-9 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="text-xs font-bold text-muted-foreground block mb-1">
+                                            Phone Number
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            placeholder="+91 9876543210"
+                                            value={newClientPhone}
+                                            onChange={(e) => setNewClientPhone(e.target.value)}
+                                            className="h-9 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-muted-foreground block mb-1">
+                                            Company Name
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            placeholder="Company (Optional)"
+                                            value={newClientCompany}
+                                            onChange={(e) => setNewClientCompany(e.target.value)}
+                                            className="h-9 rounded-xl bg-muted/30 dark:bg-muted/20 border-border/80 text-xs font-semibold text-foreground"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center justify-end gap-3 pt-4 border-t border-border/80">
+                                    <button
+                                        type="button"
+                                        onClick={() => setQuickAddOpen(false)}
+                                        disabled={addingClient}
+                                        className="px-4 py-2 bg-muted hover:bg-muted/80 text-foreground rounded-xl text-xs font-bold transition-colors disabled:opacity-50"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={addingClient}
+                                        className="flex items-center gap-2 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                                    >
+                                        {addingClient ? (
+                                            <>
+                                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                                Adding Client...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <UserPlus className="w-3.5 h-3.5" />
+                                                Add & Select Client
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </DashboardLayout>
+    );
+}

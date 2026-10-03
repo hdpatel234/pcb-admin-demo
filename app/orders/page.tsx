@@ -1,0 +1,6330 @@
+"use client";
+
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import DashboardLayout from "@/components/layout/dashboard-layout";
+import { Search, Download, Eye, ChevronLeft, ChevronRight, X, ExternalLink, User, Mail, Phone, FileText, Clock, History, Calendar as CalendarIcon, RefreshCw, Plus, ShoppingBag, CheckCircle2, Package, Film, Printer, Copy, Upload, FileSpreadsheet, AlertTriangle, AlertCircle, CheckCircle, Info, Layers, Rocket, ChevronDown, Check, Paperclip, GripVertical, Trash2, ChevronUp, ClipboardList } from "lucide-react";
+
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
+import LoadingSpinner from "@/components/ui/loading-spinner";
+import { OrdersSkeleton } from "@/components/ui/skeleton";
+import Link from "next/link";
+import { useAuth } from "@/lib/auth-context";
+import { getStatusColor } from "@/lib/status-colors";
+import { ComboSelect, ComboOrderItem } from "@/components/ComboSelect";
+import { OldOrderSelect, OldOrderItem } from "@/components/OldOrderSelect";
+
+interface StatusItem {
+    id: number;
+    name: string;
+    slug: string;
+    color: string;
+}
+
+interface OrderMeta {
+    id: number;
+    pcb_order_id: number;
+    meta_key: string;
+    meta_value: string;
+}
+
+interface StatusHistory {
+    id: number;
+    pcb_order_id: number;
+    admin_name: string;
+    status_name: string;
+    remark: string | null;
+    created_at: string;
+}
+
+interface OrderNote {
+    id: number;
+    pcb_order_id: number;
+    admin_id: number;
+    created_by?: number;
+    admin_name?: string;
+    admin_username?: string;
+    name?: string;
+    note: string;
+    created_at: string;
+}
+
+interface CustomerUser {
+    id: number;
+    name: string | null;
+    company_name?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    email?: string | null;
+    mobile?: string | null;
+}
+
+interface ApiOrder {
+    id: number;
+    user_id: number | null;
+    user?: CustomerUser | null;
+    status_id: number | null;
+    order_number: string;
+    pn_number?: string | null;
+    order_type?: string | null;
+    quotation_source?: string | null;
+    jlcpcb_file_key?: string | null;
+    q_no?: string | number | null;
+    c_g?: string | null;
+    combo?: string | null;
+    bill_number?: string | null;
+    board_name: string;
+    customer_name: string | null;
+    user_email: string;
+    user_mobile: string;
+    status: string;
+    completed_qty?: number;
+    order_qty?: number;
+    launch_qty?: number;
+    panel_qty?: number;
+    ups_qty?: number;
+    final_qty?: number;
+    failed_qty?: number;
+    unit_price: string | number;
+    order_value: string | number;
+    launch_date?: string | null;
+    delivery_date: string | null;
+    created_at: string;
+    film_applied?: boolean | number | string | null;
+    metas?: OrderMeta[];
+    status_details?: StatusItem;
+    combo_orders?: Array<{ id: number; order_number: string; status: string }>;
+    old_order_number?: string | null;
+    old_orders?: Array<{ id: number; order_number: string; status: string }>;
+    status_histories?: StatusHistory[];
+}
+
+const PAGE_SIZE = 10;
+
+const getPcbColorCode = (col: string) => {
+    const lower = (col || "").toLowerCase().trim();
+    if (lower.includes("red")) return "#ef4444";
+    if (lower.includes("blue")) return "#3b82f6";
+    if (lower.includes("black")) return "#3f3f46";
+    if (lower.includes("yellow")) return "#d97706";
+    if (lower.includes("white")) return "#0284c7";
+    if (lower.includes("purple")) return "#9333ea";
+    return "#10b981";
+};
+
+const getPcbLightBg = (colorHex: string) => {
+    return `color-mix(in srgb, ${colorHex} 7%, #ffffff 93%)`;
+};
+
+function OrdersContent() {
+    const router = useRouter();
+    const searchParams = useSearchParams();
+
+    const ALLOWED_PER_PAGE = [10, 20, 50, 100];
+
+    // Helper to update URL query parameters without losing existing unrelated params
+    const updateUrlParams = (newParamsObj: Record<string, string | number | null | undefined>, replace = true) => {
+        const currentParams = new URLSearchParams(searchParams ? searchParams.toString() : "");
+
+        Object.entries(newParamsObj).forEach(([key, val]) => {
+            if (val === null || val === undefined || val === "") {
+                currentParams.delete(key);
+            } else {
+                currentParams.set(key, String(val));
+            }
+        });
+
+        const queryString = currentParams.toString();
+        const pathname = typeof window !== "undefined" ? window.location.pathname : "/orders";
+        const targetUrl = queryString ? `${pathname}?${queryString}` : pathname;
+
+        if (replace) {
+            router.replace(targetUrl, { scroll: false });
+        } else {
+            router.push(targetUrl, { scroll: false });
+        }
+    };
+
+    const { user } = useAuth();
+    const isSuperAdmin = user?.role?.toLowerCase() === "super admin";
+    const hasPaymentPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("payments.view") : true);
+    const hasStatisticsPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("orders.statistics") : false);
+    const hasCreateOrderPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("orders.create") : false);
+    const hasChangeStatusPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("orders.change_status") : false);
+    const hasViewLogsPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("orders.view_logs") : false);
+    const hasReorderPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("orders.reorder") : false);
+    const hasGenerateJobCardPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("orders.generate_job_card") : false);
+    const hasAddFilmPermission = isSuperAdmin || (user?.permissions ? user.permissions.includes("orders.add_film") : false);
+    const hasDeleteOrderPermission = isSuperAdmin || (user?.permissions ? (user.permissions.includes("orders.delete") || user.permissions.includes("orders.manage")) : false);
+
+    const [deleteModalOrder, setDeleteModalOrder] = useState<ApiOrder | null>(null);
+    const [deletingOrder, setDeletingOrder] = useState(false);
+
+    const handleDeleteOrder = async () => {
+        if (!deleteModalOrder) return;
+        setDeletingOrder(true);
+        const toastId = toast.loading(`Deleting order #${deleteModalOrder.order_number}...`);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${deleteModalOrder.id}`, {
+                method: "DELETE",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                }
+            });
+            const json = await res.json();
+            if (res.ok && (json.success || json.status)) {
+                toast.success(json.message || `Order #${deleteModalOrder.order_number} deleted successfully.`, { id: toastId });
+                const deletedId = deleteModalOrder.id;
+                setDeleteModalOrder(null);
+                setOrders(prev => prev.filter(o => o.id !== deletedId));
+                if (orders.length <= 1 && page > 1) {
+                    setPage(p => Math.max(1, p - 1));
+                } else {
+                    fetchData(debouncedSearch);
+                }
+            } else {
+                toast.error(json.message || "Failed to delete order.", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error deleting order.", { id: toastId });
+        } finally {
+            setDeletingOrder(false);
+        }
+    };
+
+    const [orders, setOrders] = useState<ApiOrder[]>([]);
+    const [statuses, setStatuses] = useState<StatusItem[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    const [search, setSearch] = useState(() => searchParams?.get("search") || searchParams?.get("q") || "");
+    const [statusFilter, setStatusFilter] = useState(() => searchParams?.get("status") || "In Production");
+    const [startDate, setStartDate] = useState(() => searchParams?.get("start_date") || searchParams?.get("from") || "");
+    const [endDate, setEndDate] = useState(() => searchParams?.get("end_date") || searchParams?.get("to") || "");
+    const [cgFilter, setCgFilter] = useState(() => searchParams?.get("c_g") || searchParams?.get("cg") || "All");
+    // Temporary dates for Popover drafting before clicking Apply
+    const [tempStartDate, setTempStartDate] = useState(() => searchParams?.get("start_date") || searchParams?.get("from") || "");
+    const [tempEndDate, setTempEndDate] = useState(() => searchParams?.get("end_date") || searchParams?.get("to") || "");
+    const [popoverOpen, setPopoverOpen] = useState(false);
+    const [otherStatusesOpen, setOtherStatusesOpen] = useState(false);
+    const [isStatusDragOver, setIsStatusDragOver] = useState(false);
+
+    const handleSelectStatus = (status: string) => {
+        setStatusFilter(status);
+        setPage(1);
+        updateUrlParams({
+            status,
+            page: 1
+        });
+    };
+
+    const handleSelectCg = (cg: string) => {
+        setCgFilter(cg);
+        setPage(1);
+        updateUrlParams({
+            c_g: cg === "All" ? null : cg,
+            page: 1
+        });
+    };
+
+    const [page, setPage] = useState<number>(() => {
+        const p = parseInt(searchParams?.get("page") || "1", 10);
+        return isNaN(p) || p < 1 ? 1 : p;
+    });
+    const [pageSize, setPageSize] = useState<number>(() => {
+        const ps = parseInt(searchParams?.get("per_page") || searchParams?.get("limit") || "10", 10);
+        return ALLOWED_PER_PAGE.includes(ps) ? ps : 10;
+    });
+    const [sortBy, setSortBy] = useState<string>(() => searchParams?.get("sort_by") || searchParams?.get("sort") || "created_at");
+    const [sortOrder, setSortOrder] = useState<"asc" | "desc">(() => {
+        return (searchParams?.get("sort_order") || searchParams?.get("order") || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+    });
+    const [totalOrders, setTotalOrders] = useState<number>(0);
+    const [totalRecords, setTotalRecords] = useState<number>(0);
+    const [apiStats, setApiStats] = useState<any>(null);
+
+    // Sync state from URL searchParams (e.g. browser back/forward or direct links)
+    useEffect(() => {
+        if (!searchParams) return;
+        const hasStatus = searchParams.has("status");
+        const s = searchParams.get("search") || searchParams.get("q") || "";
+        const st = searchParams.get("status") || "In Production";
+        const sd = searchParams.get("start_date") || searchParams.get("from") || "";
+        const ed = searchParams.get("end_date") || searchParams.get("to") || "";
+        const cgParam = searchParams.get("c_g") || searchParams.get("cg") || "All";
+
+        const pRaw = parseInt(searchParams.get("page") || "1", 10);
+        const p = isNaN(pRaw) || pRaw < 1 ? 1 : pRaw;
+
+        const psRaw = parseInt(searchParams.get("per_page") || searchParams.get("limit") || "10", 10);
+        const ps = ALLOWED_PER_PAGE.includes(psRaw) ? psRaw : 10;
+
+        const sb = searchParams.get("sort_by") || searchParams.get("sort") || "created_at";
+        const so = (searchParams.get("sort_order") || searchParams.get("order") || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+
+        setSearch(s);
+        setDebouncedSearch(s);
+        setStatusFilter(st);
+        setCgFilter(cgParam);
+        setStartDate(sd);
+        setEndDate(ed);
+        setTempStartDate(sd);
+        setTempEndDate(ed);
+        setPage(p);
+        setPageSize(ps);
+        setSortBy(sb);
+        setSortOrder(so);
+
+        // If opening page without status in URL, default to 'In Production' and update URL
+        if (!hasStatus) {
+            updateUrlParams({ status: "In Production" }, true);
+        }
+    }, [searchParams]);
+
+    const handleSort = (columnKey: string) => {
+        const newOrder = sortBy === columnKey && sortOrder === "desc" ? "asc" : "desc";
+        setSortBy(columnKey);
+        setSortOrder(newOrder);
+        setPage(1);
+        updateUrlParams({
+            sort_by: columnKey,
+            sort_order: newOrder,
+            page: 1
+        });
+    };
+
+    // Quick preview modal state
+    const [selectedOrder, setSelectedOrder] = useState<ApiOrder | null>(null);
+
+    // Reorder modal state
+    const [reorderModalOrder, setReorderModalOrder] = useState<ApiOrder | null>(null);
+    const [reorderQty, setReorderQty] = useState<number>(1);
+    const [reorderDeliveryDate, setReorderDeliveryDate] = useState<string>("");
+    const [reordering, setReordering] = useState(false);
+
+    // Reorder pricing, GST & payment state
+    const [gstOptionsList, setGstOptionsList] = useState<number[]>([0, 5, 12, 18, 20]);
+    const [reorderPricingMethod, setReorderPricingMethod] = useState<"pcb_rate" | "price_per_sqm">("pcb_rate");
+    const [reorderPcbRate, setReorderPcbRate] = useState<string>("100");
+    const [reorderPricePerSqm, setReorderPricePerSqm] = useState<string>("5000");
+    const [reorderGstRate, setReorderGstRate] = useState<number>(18);
+    const [reorderPaymentMethod, setReorderPaymentMethod] = useState<string>("Manual Payment");
+    const [reorderPaymentRef, setReorderPaymentRef] = useState<string>("");
+    const [reorderPaymentDate, setReorderPaymentDate] = useState<string>("");
+    const [reorderPaymentNotes, setReorderPaymentNotes] = useState<string>("");
+
+    useEffect(() => {
+        const fetchGstSettings = async () => {
+            try {
+                const token = localStorage.getItem("admin_token");
+                const res = await fetch("/api/admin/gst-settings", {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                const json = await res.json();
+                if (json.success && json.data) {
+                    if (Array.isArray(json.data.rates)) setGstOptionsList(json.data.rates);
+                    if (json.data.active_rate) setReorderGstRate(Number(json.data.active_rate));
+                }
+            } catch (err) {
+                console.error("Failed to load GST settings:", err);
+            }
+        };
+        fetchGstSettings();
+    }, []);
+
+    const handleOpenReorderModal = (order: ApiOrder) => {
+        setReorderModalOrder(order);
+        const origQty = order.order_qty || parseInt(getMetaValue(order, 'quantity', '1')) || 1;
+        const now = new Date();
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        setReorderQty(origQty);
+        setReorderDeliveryDate(todayStr);
+
+        const pRate = getMetaValue(order, 'pcb_rate', (Number(order.unit_price) || 100).toString());
+        const sqRate = getMetaValue(order, 'price_per_sqm', '5000');
+        const pMethod = getMetaValue(order, 'pricing_method', 'pcb_rate');
+
+        setReorderPricingMethod(pMethod === 'price_per_sqm' ? 'price_per_sqm' : 'pcb_rate');
+        setReorderPcbRate(pRate);
+        setReorderPricePerSqm(sqRate);
+        setReorderPaymentMethod('Manual Payment');
+        setReorderPaymentRef('');
+        setReorderPaymentDate(todayStr);
+        setReorderPaymentNotes('');
+    };
+
+    // Import & Export Modal state
+    const [importModalOpen, setImportModalOpen] = useState(false);
+    const [importFile, setImportFile] = useState<File | null>(null);
+    const [importingPreview, setImportingPreview] = useState(false);
+    const [importPreviewData, setImportPreviewData] = useState<any | null>(null);
+    const [importDuplicateAction, setImportDuplicateAction] = useState<"skip" | "update" | "create_new">("skip");
+    const [executingImport, setExecutingImport] = useState(false);
+
+    // Import Queue & History Tracking state
+    const [importHistory, setImportHistory] = useState<any[]>([]);
+    const [importHistoryLoading, setImportHistoryLoading] = useState(false);
+    const [selectedImportDetail, setSelectedImportDetail] = useState<any | null>(null);
+    const [importDetailOpen, setImportDetailOpen] = useState(false);
+
+    const fetchImportHistory = async () => {
+        setImportHistoryLoading(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch("/api/admin/orders/imports", {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (res.ok && json.status && json.data) {
+                setImportHistory(json.data.data || json.data || []);
+            }
+        } catch (err) {
+            console.error("Error fetching import history:", err);
+        } finally {
+            setImportHistoryLoading(false);
+        }
+    };
+
+    const fetchImportDetail = async (id: number) => {
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/imports/${id}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (res.ok && json.status && json.data) {
+                setSelectedImportDetail(json.data);
+                setImportDetailOpen(true);
+            } else {
+                toast.error(json.message || "Failed to fetch import details");
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error fetching import details");
+        }
+    };
+
+    const handleRetryImport = async (id: number) => {
+        const toastId = toast.loading("Re-queueing import...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/imports/${id}/retry`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (res.ok && json.status) {
+                toast.success("Import re-queued successfully!", { id: toastId });
+                fetchImportHistory();
+            } else {
+                toast.error(json.message || "Failed to retry import", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error retrying import", { id: toastId });
+        }
+    };
+
+    const handleCancelImport = async (id: number) => {
+        const toastId = toast.loading("Cancelling import...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/imports/${id}/cancel`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (res.ok && json.status) {
+                toast.success("Import cancelled.", { id: toastId });
+                fetchImportHistory();
+            } else {
+                toast.error(json.message || "Failed to cancel import", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error cancelling import", { id: toastId });
+        }
+    };
+
+    // Fetch import history on mount
+    useEffect(() => {
+        fetchImportHistory();
+    }, []);
+
+    // Poll import history only if modal is open and has active background jobs
+    useEffect(() => {
+        if (!importModalOpen) return;
+        const hasActive = importHistory.some(imp => imp.status === "queued" || imp.status === "processing");
+        if (!hasActive) return;
+
+        const interval = setInterval(() => {
+            fetchImportHistory();
+        }, 5000);
+
+        return () => clearInterval(interval);
+    }, [importModalOpen]);
+
+    // Export Modal & Filter Preview state
+    const [exportModalOpen, setExportModalOpen] = useState(false);
+    const [exporting, setExporting] = useState(false);
+    const [exportStartDate, setExportStartDate] = useState("");
+    const [exportEndDate, setExportEndDate] = useState("");
+    const [exportDateField, setExportDateField] = useState("created_at");
+    const [exportStatus, setExportStatus] = useState("All");
+    const [exportCustomer, setExportCustomer] = useState("");
+    const [exportLayer, setExportLayer] = useState("All");
+    const [exportMask, setExportMask] = useState("All");
+    const [exportCg, setExportCg] = useState("All");
+    const [exportTool, setExportTool] = useState("");
+    const [exportCombo, setExportCombo] = useState("");
+    const [exportPn, setExportPn] = useState("");
+    const [exportQuoteNo, setExportQuoteNo] = useState("");
+    const [exportBillNo, setExportBillNo] = useState("");
+    const [exportFormat, setExportFormat] = useState<"xlsx" | "csv">("xlsx");
+    const [exportPreviewLoading, setExportPreviewLoading] = useState(false);
+    const [exportPreviewData, setExportPreviewData] = useState<{ total: number; total_count?: number; data: any[]; current_page: number; last_page: number; total_pages?: number } | null>(null);
+    const [exportPreviewPage, setExportPreviewPage] = useState(1);
+
+    const handleDownloadSampleSheet = async () => {
+        const toastId = toast.loading("Downloading sample Excel template...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch("/api/admin/orders/import-sample", {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            if (!res.ok) throw new Error("Failed to download sample sheet");
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "sample_pcb_manufacturing_orders.xlsx";
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            toast.success("Sample template downloaded!", { id: toastId });
+        } catch (err: any) {
+            toast.error(err?.message || "Error downloading sample sheet", { id: toastId });
+        }
+    };
+
+    const fetchExportPreview = async (pageToFetch: number = 1) => {
+        setExportPreviewLoading(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const params = new URLSearchParams();
+            if (exportStartDate) params.set("start_date", exportStartDate);
+            if (exportEndDate) params.set("end_date", exportEndDate);
+            if (exportDateField) params.set("date_field", exportDateField);
+            if (exportStatus && exportStatus !== "All") params.set("status", exportStatus);
+            if (exportCustomer) {
+                params.set("customer", exportCustomer);
+                params.set("customer_name", exportCustomer);
+            }
+            if (exportLayer && exportLayer !== "All") params.set("layer", exportLayer);
+            if (exportMask && exportMask !== "All") params.set("mask", exportMask);
+            if (exportCg && exportCg !== "All") {
+                params.set("cg", exportCg);
+                params.set("c_g", exportCg);
+            }
+            if (exportTool) params.set("tool", exportTool);
+            if (exportCombo) params.set("combo", exportCombo);
+            if (exportPn) {
+                params.set("pn", exportPn);
+                params.set("p_n", exportPn);
+            }
+            if (exportQuoteNo) {
+                params.set("quote_no", exportQuoteNo);
+                params.set("quote_number", exportQuoteNo);
+            }
+            if (exportBillNo) {
+                params.set("bill_no", exportBillNo);
+                params.set("bill_number", exportBillNo);
+            }
+            params.set("page", pageToFetch.toString());
+            params.set("per_page", "10");
+
+            const res = await fetch(`/api/admin/orders/export-preview?${params.toString()}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (res.ok && json.success) {
+                const totalCount = json.total_count ?? json.total ?? (json.data ? json.data.length : 0);
+                const lastPage = json.last_page ?? json.total_pages ?? 1;
+                const currentPage = json.current_page ?? json.page ?? pageToFetch;
+
+                setExportPreviewData({
+                    ...json,
+                    total: totalCount,
+                    total_count: totalCount,
+                    last_page: lastPage,
+                    total_pages: lastPage,
+                    current_page: currentPage,
+                    page: currentPage,
+                });
+                setExportPreviewPage(currentPage);
+            } else {
+                setExportPreviewData(null);
+            }
+        } catch (e) {
+            console.error("Export preview fetch error:", e);
+        } finally {
+            setExportPreviewLoading(false);
+        }
+    };
+
+    const handleResetExportFilters = () => {
+        setExportStartDate("");
+        setExportEndDate("");
+        setExportDateField("created_at");
+        setExportStatus("All");
+        setExportCustomer("");
+        setExportLayer("All");
+        setExportMask("All");
+        setExportCg("All");
+        setExportTool("");
+        setExportCombo("");
+        setExportPn("");
+        setExportQuoteNo("");
+        setExportBillNo("");
+        setExportPreviewPage(1);
+    };
+
+    const handleDownloadFilteredExport = async () => {
+        setExporting(true);
+        const toastId = toast.loading(`Generating ${exportFormat.toUpperCase()} file...`);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const params = new URLSearchParams();
+            params.set("format", exportFormat);
+            if (exportStartDate) params.set("start_date", exportStartDate);
+            if (exportEndDate) params.set("end_date", exportEndDate);
+            if (exportDateField) params.set("date_field", exportDateField);
+            if (exportStatus && exportStatus !== "All") params.set("status", exportStatus);
+            if (exportCustomer) {
+                params.set("customer", exportCustomer);
+                params.set("customer_name", exportCustomer);
+            }
+            if (exportLayer && exportLayer !== "All") params.set("layer", exportLayer);
+            if (exportMask && exportMask !== "All") params.set("mask", exportMask);
+            if (exportCg && exportCg !== "All") {
+                params.set("cg", exportCg);
+                params.set("c_g", exportCg);
+            }
+            if (exportTool) params.set("tool", exportTool);
+            if (exportCombo) params.set("combo", exportCombo);
+            if (exportPn) {
+                params.set("pn", exportPn);
+                params.set("p_n", exportPn);
+            }
+            if (exportQuoteNo) {
+                params.set("quote_no", exportQuoteNo);
+                params.set("quote_number", exportQuoteNo);
+            }
+            if (exportBillNo) {
+                params.set("bill_no", exportBillNo);
+                params.set("bill_number", exportBillNo);
+            }
+
+            const res = await fetch(`/api/admin/orders/export?${params.toString()}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+
+            if (!res.ok) throw new Error("Failed to generate export file");
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            const filenameDate = new Date().toISOString().slice(0, 10);
+            a.download = `pcb-manufacturing-export-${filenameDate}.${exportFormat}`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+            toast.success(`Export file (${exportFormat.toUpperCase()}) downloaded successfully!`, { id: toastId });
+            setExportModalOpen(false);
+        } catch (err: any) {
+            toast.error(err?.message || "Failed to download export", { id: toastId });
+        } finally {
+            setExporting(false);
+        }
+    };
+
+
+    const handlePreviewImport = async (file: File) => {
+        setImportingPreview(true);
+        setImportPreviewData(null);
+        const toastId = toast.loading("Analyzing spreadsheet format and rows...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const res = await fetch("/api/admin/orders/import-preview", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+                body: formData,
+            });
+
+            const json = await res.json();
+            if (res.ok && json.success) {
+                setImportPreviewData(json);
+                toast.success(`Spreadsheet parsed: ${json.summary?.valid_rows || 0} valid rows found`, { id: toastId });
+            } else {
+                toast.error(json.message || "Failed to preview import file", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error parsing spreadsheet file", { id: toastId });
+        } finally {
+            setImportingPreview(false);
+        }
+    };
+
+    const handleExecuteImport = async () => {
+        if (!importFile) return;
+        setExecutingImport(true);
+        const toastId = toast.loading("Uploading and queueing import file...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const formData = new FormData();
+            formData.append("file", importFile);
+            formData.append("duplicate_action", importDuplicateAction);
+
+            const res = await fetch("/api/admin/orders/import-upload", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+                body: formData,
+            });
+
+            const json = await res.json();
+            if (res.ok && (json.success || json.status)) {
+                toast.success(
+                    `Import Queued! Processing file in background.`,
+                    { id: toastId, duration: 5000 }
+                );
+                setImportModalOpen(false);
+                setImportFile(null);
+                setImportPreviewData(null);
+                fetchImportHistory();
+                fetchData(debouncedSearch);
+            } else {
+                toast.error(json.message || "Failed to queue import file", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error queueing order import", { id: toastId });
+        } finally {
+            setExecutingImport(false);
+        }
+    };
+
+    const handleReorderSubmit = async (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
+        if (!reorderModalOrder) return;
+
+        if (!reorderQty || reorderQty <= 0) {
+            toast.error("Please enter a valid order quantity");
+            return;
+        }
+
+        setReordering(true);
+        const toastId = toast.loading(`Creating reorder for #${reorderModalOrder.order_number}...`);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${reorderModalOrder.id}/reorder`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    order_qty: reorderQty,
+                    quantity: reorderQty,
+                    delivery_date: reorderDeliveryDate,
+                    pricing_method: reorderPricingMethod,
+                    pcb_rate: parseFloat(reorderPcbRate) || 0,
+                    price_per_sqm: parseFloat(reorderPricePerSqm) || 0,
+                    gst_rate: reorderGstRate,
+                    payment_method: reorderPaymentMethod,
+                    payment_reference: reorderPaymentRef,
+                    payment_date: reorderPaymentDate,
+                    payment_notes: reorderPaymentNotes
+                })
+            });
+            const data = await res.json();
+            if (res.ok && (data.status || data.success)) {
+                toast.success(data.message || `Order reordered successfully!`, { id: toastId });
+                setReorderModalOrder(null);
+                fetchData(debouncedSearch);
+            } else {
+                toast.error(data.message || "Failed to reorder", { id: toastId });
+            }
+        } catch (err: any) {
+            console.error("Reorder error:", err);
+            toast.error(err?.message || "Error processing reorder", { id: toastId });
+        } finally {
+            setReordering(false);
+        }
+    };
+
+    // Change status modal state
+    const [statusModalOrder, setStatusModalOrder] = useState<ApiOrder | null>(null);
+    const [modalOrderNumber, setModalOrderNumber] = useState("");
+    const [modalPnNumber, setModalPnNumber] = useState("");
+    const [modalOrderNumberError, setModalOrderNumberError] = useState("");
+    const [modalNewStatus, setModalNewStatus] = useState("");
+    const [modalCustomerName, setModalCustomerName] = useState("");
+    const [modalUserId, setModalUserId] = useState<string>("");
+    const [customerList, setCustomerList] = useState<any[]>([]);
+    const [customerSearch, setCustomerSearch] = useState<string>("");
+    const [loadingCustomers, setLoadingCustomers] = useState<boolean>(false);
+    const [customerDropdownOpen, setCustomerDropdownOpen] = useState<boolean>(false);
+
+    const fetchCustomersList = async (searchQuery: string = "") => {
+        setLoadingCustomers(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            let url = "/api/admin/users";
+            if (searchQuery.trim()) {
+                url += `?search=${encodeURIComponent(searchQuery.trim())}&q=${encodeURIComponent(searchQuery.trim())}`;
+            }
+            const res = await fetch(url, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (data.status || data.success) {
+                const list = data.data || data.users || [];
+                setCustomerList(list);
+                if (modalUserId) {
+                    const found = list.find((u: any) => String(u.id) === String(modalUserId));
+                    if (found) {
+                        const name = found.company_name || found.name || `${found.first_name || ''} ${found.last_name || ''}`.trim();
+                        if (name) {
+                            setModalCustomerName(name);
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Failed to load customer list:", err);
+        } finally {
+            setLoadingCustomers(false);
+        }
+    };
+    const [modalOrderQty, setModalOrderQty] = useState<number>(0);
+    const [modalCompletedQty, setModalCompletedQty] = useState<number>(0);
+    const [modalFailedQty, setModalFailedQty] = useState<number>(0);
+    const [modalQNo, setModalQNo] = useState("");
+    const [modalCg, setModalCg] = useState<string>("");
+    const [modalCombo, setModalCombo] = useState("");
+    const [modalComboOrders, setModalComboOrders] = useState<ComboOrderItem[]>([]);
+    const [modalOldOrderNumber, setModalOldOrderNumber] = useState("");
+    const [modalOldOrders, setModalOldOrders] = useState<OldOrderItem[]>([]);
+    const [modalLaunchQty, setModalLaunchQty] = useState<number>(0);
+    const [modalPanelQty, setModalPanelQty] = useState<number>(0);
+    const [modalUpsQty, setModalUpsQty] = useState<number>(0);
+    const [modalFinalQty, setModalFinalQty] = useState<number>(0);
+    const [modalBillNumber, setModalBillNumber] = useState("");
+    const [modalBillNumberError, setModalBillNumberError] = useState("");
+    const [modalDeliveryDate, setModalDeliveryDate] = useState("");
+    const [modalOriginalDeliveryDate, setModalOriginalDeliveryDate] = useState("");
+    const [modalRemark, setModalRemark] = useState("");
+    const [updatingStatus, setUpdatingStatus] = useState(false);
+
+    // Order logs modal state
+    const [logsModalOrder, setLogsModalOrder] = useState<ApiOrder | null>(null);
+    const [logsData, setLogsData] = useState<any[]>([]);
+    const [loadingLogs, setLoadingLogs] = useState(false);
+
+    // Internal Notes modal state
+    const [notesModalOrder, setNotesModalOrder] = useState<ApiOrder | null>(null);
+    const [notesModalList, setNotesModalList] = useState<OrderNote[]>([]);
+    const [loadingOrderNotes, setLoadingOrderNotes] = useState(false);
+    const [modalNewNote, setModalNewNote] = useState("");
+    const [submittingModalNote, setSubmittingModalNote] = useState(false);
+    const [deletingModalNoteId, setDeletingModalNoteId] = useState<number | null>(null);
+    const [modalNoteToDelete, setModalNoteToDelete] = useState<OrderNote | null>(null);
+
+    // Add / Edit Film modal state
+    const [filmModalOrder, setFilmModalOrder] = useState<ApiOrder | null>(null);
+    const [filmDateTime, setFilmDateTime] = useState("");
+    const [filmApplied, setFilmApplied] = useState(false);
+    const [savingFilm, setSavingFilm] = useState(false);
+
+    // Job Card modal state & data editor
+    const [jobCardModalOrder, setJobCardModalOrder] = useState<ApiOrder | null>(null);
+    const [jobCardData, setJobCardData] = useState<any>(null);
+    const [loadingJobCard, setLoadingJobCard] = useState<boolean>(false);
+    const [savingJobCard, setSavingJobCard] = useState<boolean>(false);
+    const [downloadingPdf, setDownloadingPdf] = useState<boolean>(false);
+    const [uploadingDoc, setUploadingDoc] = useState<boolean>(false);
+    const [downloadingCombinedPdf, setDownloadingCombinedPdf] = useState<boolean>(false);
+    const [selectedPreviewDoc, setSelectedPreviewDoc] = useState<any | null>(null);
+    const [combinedPreviewOpen, setCombinedPreviewOpen] = useState<boolean>(false);
+    const [draggedDocIndex, setDraggedDocIndex] = useState<number | null>(null);
+
+
+    const openJobCardModal = (order: ApiOrder) => {
+        router.push(`/orders/${order.id}/job-card`);
+    };
+
+    useEffect(() => {
+        if (!jobCardModalOrder) {
+            setJobCardData(null);
+            return;
+        }
+        setLoadingJobCard(true);
+        const token = localStorage.getItem("admin_token");
+        fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card`, {
+            headers: {
+                "Authorization": `Bearer ${token}`,
+                "Accept": "application/json"
+            }
+        })
+            .then(res => res.json())
+            .then(json => {
+                if (json.success && json.data) {
+                    setJobCardData(json.data);
+                }
+            })
+            .catch(err => {
+                console.error("Error loading job card:", err);
+            })
+            .finally(() => {
+                setLoadingJobCard(false);
+            });
+    }, [jobCardModalOrder]);
+
+    const updateJobCardField = (key: string, value: any) => {
+        setJobCardData((prev: any) => {
+            if (!prev) return prev;
+            const updated = { ...prev, [key]: value };
+            if (key === 'ups' || key === 'launched_qty' || key === 'order_qty') {
+                const lQty = parseInt(updated.launched_qty || updated.order_qty || '0', 10);
+                const uQty = parseInt(updated.ups || '1', 10);
+                if (lQty > 0 && uQty > 0) {
+                    updated.panels = String(Math.ceil(lQty / uQty));
+                }
+            }
+            return updated;
+        });
+    };
+
+    const updateJobCardProcess = (index: number, field: string, value: any) => {
+        setJobCardData((prev: any) => {
+            if (!prev || !prev.processes) return prev;
+            const newProcs = [...prev.processes];
+            newProcs[index] = { ...newProcs[index], [field]: value };
+            return { ...prev, processes: newProcs };
+        });
+    };
+
+    const handleSaveJobCard = async () => {
+        if (!jobCardModalOrder || !jobCardData) return;
+        setSavingJobCard(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card`, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                },
+                body: JSON.stringify({ job_card_data: jobCardData })
+            });
+            const json = await res.json();
+            if (res.ok && json.success) {
+                toast.success("Job Card saved successfully!");
+                if (json.data) setJobCardData(json.data);
+            } else {
+                toast.error(json.message || "Failed to save Job Card");
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error saving Job Card");
+        } finally {
+            setSavingJobCard(false);
+        }
+    };
+
+    const handleDownloadPdf = async () => {
+        if (!jobCardModalOrder || !jobCardData) return;
+        setDownloadingPdf(true);
+        const toastId = toast.loading("Generating PDF from backend...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card/pdf`, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ job_card_data: jobCardData })
+            });
+
+            if (!res.ok) {
+                throw new Error("Failed to generate PDF on backend");
+            }
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `JOB_CARD_${jobCardData.job_number || jobCardModalOrder.order_number}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            toast.success("Job Card PDF downloaded!", { id: toastId });
+        } catch (err: any) {
+            toast.error(err?.message || "Error downloading Job Card PDF", { id: toastId });
+        } finally {
+            setDownloadingPdf(false);
+        }
+    };
+
+    const handleDownloadDocx = async () => {
+        if (!jobCardModalOrder || !jobCardData) return;
+        setDownloadingPdf(true);
+        const toastId = toast.loading("Generating editable Job Card DOCX...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card/docx`, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ job_card_data: jobCardData })
+            });
+
+            if (!res.ok) {
+                throw new Error("Failed to generate DOCX on backend");
+            }
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `JOB_CARD_${jobCardData.job_number || jobCardModalOrder.order_number}.docx`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            toast.success("Editable Job Card DOCX downloaded!", { id: toastId });
+        } catch (err: any) {
+            toast.error(err?.message || "Error downloading Job Card DOCX", { id: toastId });
+        } finally {
+            setDownloadingPdf(false);
+        }
+    };
+
+    const handleUploadJobCardDoc = async (file: File) => {
+        if (!jobCardModalOrder) return;
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        const allowedExts = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'webp'];
+        if (!ext || !allowedExts.includes(ext)) {
+            toast.error("Only PDF, Word (.doc, .docx), and Image (.jpg, .jpeg, .png, .webp) files are supported.");
+            return;
+        }
+        if (file.size > 25 * 1024 * 1024) {
+            toast.error("File size exceeds maximum limit of 25MB.");
+            return;
+        }
+
+        setUploadingDoc(true);
+        const isImage = ['jpg', 'jpeg', 'png', 'webp'].includes(ext);
+        const toastId = toast.loading(
+            isImage
+                ? "Uploading & processing image to A4 PDF page..."
+                : (ext === 'pdf' ? "Uploading PDF attachment..." : "Uploading & converting Word document to PDF...")
+        );
+        try {
+            const token = localStorage.getItem("admin_token");
+            const formData = new FormData();
+            formData.append("document", file);
+
+            const res = await fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card/documents/upload`, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Accept": "application/json"
+                },
+                body: formData
+            });
+
+            const json = await res.json();
+            if (res.ok && json.success && json.data) {
+                toast.success(isImage ? "Image converted to A4 page & attached!" : "Document attached successfully!", { id: toastId });
+                setJobCardData((prev: any) => {
+                    if (!prev) return prev;
+                    const existingDocs = prev.documents || [];
+                    return { ...prev, documents: [...existingDocs, json.data] };
+                });
+            } else {
+                toast.error(json.message || "Failed to attach document", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error uploading document", { id: toastId });
+        } finally {
+            setUploadingDoc(false);
+        }
+    };
+
+    const handleDeleteJobCardDoc = async (docId: number) => {
+        if (!jobCardModalOrder) return;
+        if (!confirm("Are you sure you want to remove this attached document?")) return;
+
+        const toastId = toast.loading("Removing document...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card/documents/${docId}`, {
+                method: "DELETE",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Accept": "application/json"
+                }
+            });
+
+            const json = await res.json();
+            if (res.ok && json.success) {
+                toast.success("Document removed.", { id: toastId });
+                setJobCardData((prev: any) => {
+                    if (!prev) return prev;
+                    const filtered = (prev.documents || []).filter((d: any) => d.id !== docId);
+                    return { ...prev, documents: filtered };
+                });
+            } else {
+                toast.error(json.message || "Failed to remove document", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error removing document", { id: toastId });
+        }
+    };
+
+    const handleReorderJobCardDocs = async (newDocList: any[]) => {
+        if (!jobCardModalOrder) return;
+        setJobCardData((prev: any) => prev ? { ...prev, documents: newDocList } : prev);
+
+        try {
+            const token = localStorage.getItem("admin_token");
+            const payload = {
+                documents: newDocList.map((d: any, index: number) => ({
+                    id: d.id,
+                    sort_order: index + 2
+                }))
+            };
+
+            await fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card/documents/reorder`, {
+                method: "PUT",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                },
+                body: JSON.stringify(payload)
+            });
+        } catch (err: any) {
+            console.error("Failed to persist document order:", err);
+        }
+    };
+
+    const handleMoveDocItem = (index: number, direction: 'up' | 'down') => {
+        if (!jobCardData || !jobCardData.documents) return;
+        const docs = [...jobCardData.documents];
+        const targetIndex = direction === 'up' ? index - 1 : index + 1;
+        if (targetIndex < 0 || targetIndex >= docs.length) return;
+
+        const temp = docs[index];
+        docs[index] = docs[targetIndex];
+        docs[targetIndex] = temp;
+
+        handleReorderJobCardDocs(docs);
+    };
+
+    const handleDownloadCombinedPdf = async () => {
+        if (!jobCardModalOrder || !jobCardData) return;
+        setDownloadingCombinedPdf(true);
+        const toastId = toast.loading("Generating combined PDF from backend...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const docSequence = (jobCardData.documents || []).map((d: any) => d.id);
+            const fullSequence = ['job_card', ...docSequence];
+
+            const res = await fetch(`/api/admin/orders/${jobCardModalOrder.id}/job-card/combined-pdf`, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    job_card_data: jobCardData,
+                    document_sequence: fullSequence
+                })
+            });
+
+            if (!res.ok) {
+                const errJson = await res.json().catch(() => ({}));
+                throw new Error(errJson.message || "Failed to generate combined PDF on backend");
+            }
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `JOB_CARD_${jobCardData.job_number || jobCardModalOrder.order_number}_COMPLETE.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            toast.success("Combined PDF generated and downloaded successfully!", { id: toastId });
+        } catch (err: any) {
+            toast.error(err?.message || "Error generating combined PDF", { id: toastId });
+        } finally {
+            setDownloadingCombinedPdf(false);
+        }
+    };
+
+
+    const openFilmModal = (order: ApiOrder) => {
+        setFilmModalOrder(order);
+        const existingFilmVal = getMetaValue(order, 'film_datetime', getMetaValue(order, 'film_date', ''));
+
+        // Check if film is applied
+        const rawApplied = order.film_applied;
+        const metaApplied = getMetaValue(order, 'film_applied', '');
+        let isApplied = false;
+        if (rawApplied === true || rawApplied === 1 || rawApplied === '1' || rawApplied === 'true' || rawApplied === 'yes') {
+            isApplied = true;
+        } else if (metaApplied === '1' || metaApplied.toLowerCase() === 'true' || metaApplied.toLowerCase() === 'yes') {
+            isApplied = true;
+        } else if (existingFilmVal && existingFilmVal !== 'N/A' && existingFilmVal.trim() !== '') {
+            if (rawApplied !== false && rawApplied !== 0 && rawApplied !== '0' && rawApplied !== 'false' && rawApplied !== 'no' &&
+                metaApplied !== '0' && metaApplied.toLowerCase() !== 'false' && metaApplied.toLowerCase() !== 'no') {
+                isApplied = true;
+            }
+        }
+        setFilmApplied(isApplied);
+
+        if (existingFilmVal && existingFilmVal !== 'N/A') {
+            let formatted = existingFilmVal;
+            try {
+                const dateObj = new Date(existingFilmVal);
+                if (!isNaN(dateObj.getTime())) {
+                    const pad = (n: number) => n < 10 ? '0' + n : n;
+                    formatted = `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())}T${pad(dateObj.getHours())}:${pad(dateObj.getMinutes())}`;
+                }
+            } catch (e) { }
+            setFilmDateTime(formatted);
+        } else {
+            const now = new Date();
+            const pad = (n: number) => n < 10 ? '0' + n : n;
+            const defaultNow = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+            setFilmDateTime(defaultNow);
+        }
+    };
+
+    const handleSaveFilm = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!filmModalOrder) return;
+        if (!filmDateTime) {
+            toast.error("Please select a date and time");
+            return;
+        }
+
+        setSavingFilm(true);
+        const toastId = toast.loading("Saving Film details...");
+
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${filmModalOrder.id}`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    film_datetime: filmDateTime,
+                    film_applied: filmApplied ? 1 : 0,
+                    meta_key: "film_datetime",
+                    meta_value: filmDateTime,
+                    metas: {
+                        film_datetime: filmDateTime,
+                        film_date: filmDateTime,
+                        film_applied: filmApplied ? "1" : "0"
+                    }
+                })
+            });
+
+            const data = await res.json();
+            if (res.ok && (data.status || data.success)) {
+                toast.success("Film details saved successfully", { id: toastId });
+                setFilmModalOrder(null);
+                fetchData(debouncedSearch);
+            } else {
+                toast.error(data.message || "Failed to save film details", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error saving film details", { id: toastId });
+        } finally {
+            setSavingFilm(false);
+        }
+    };
+
+    const openLogsModal = async (order: ApiOrder) => {
+        setLogsModalOrder(order);
+        setLogsData([]);
+        setLoadingLogs(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${order.order_number}/logs`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (json.status || json.success) {
+                setLogsData(json.data || []);
+            } else {
+                toast.error("Failed to load activity logs");
+            }
+        } catch (e) {
+            console.error("Failed to fetch order logs:", e);
+            toast.error("Error loading order logs");
+        } finally {
+            setLoadingLogs(false);
+        }
+    };
+
+    const openNotesModal = async (order: ApiOrder) => {
+        setNotesModalOrder(order);
+        setNotesModalList([]);
+        setModalNewNote("");
+        setModalNoteToDelete(null);
+        setLoadingOrderNotes(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${order.order_number}/notes`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (json.status || json.success) {
+                setNotesModalList(json.data || []);
+            } else {
+                toast.error(json.message || "Failed to load internal notes");
+            }
+        } catch (e) {
+            console.error("Failed to fetch order notes:", e);
+            toast.error("Error loading internal notes");
+        } finally {
+            setLoadingOrderNotes(false);
+        }
+    };
+
+    const handleAddModalNote = async (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
+        if (!modalNewNote.trim() || !notesModalOrder || submittingModalNote) return;
+        setSubmittingModalNote(true);
+        const toastId = toast.loading("Adding internal note...");
+        try {
+            const token = typeof window !== "undefined" ? (localStorage.getItem("admin_token") || "") : "";
+            const savedAdminUser = typeof window !== "undefined" ? (localStorage.getItem("user") || localStorage.getItem("admin_user")) : null;
+            let loggedInAdminId = user?.id || null;
+            let loggedInAdminName = user?.name || user?.username || null;
+            if ((!loggedInAdminId || !loggedInAdminName) && savedAdminUser) {
+                try {
+                    const parsed = JSON.parse(savedAdminUser);
+                    loggedInAdminId = loggedInAdminId || parsed.id || null;
+                    loggedInAdminName = loggedInAdminName || parsed.name || parsed.username || null;
+                } catch (e) { }
+            }
+
+            const res = await fetch(`/api/admin/orders/${notesModalOrder.order_number}/notes`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    note: modalNewNote.trim(),
+                    created_by: loggedInAdminId,
+                    admin_id: loggedInAdminId,
+                    admin_name: loggedInAdminName
+                })
+            });
+            const json = await res.json();
+            if (res.ok && (json.status || json.success)) {
+                toast.success("Internal note added successfully", { id: toastId });
+                setModalNewNote("");
+                const notesRes = await fetch(`/api/admin/orders/${notesModalOrder.order_number}/notes`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                const notesJson = await notesRes.json();
+                if (notesJson.status && Array.isArray(notesJson.data)) {
+                    setNotesModalList(notesJson.data);
+                } else if (json.data && json.data.id) {
+                    setNotesModalList(prev => [json.data, ...prev]);
+                }
+            } else {
+                toast.error(json.message || "Failed to add internal note", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error adding internal note", { id: toastId });
+        } finally {
+            setSubmittingModalNote(false);
+        }
+    };
+
+    const confirmDeleteModalNote = async (noteId: number) => {
+        if (deletingModalNoteId !== null) return;
+        setDeletingModalNoteId(noteId);
+        const toastId = toast.loading("Deleting internal note...");
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/notes/${noteId}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (res.ok && (json.status || json.success)) {
+                toast.success("Note deleted successfully", { id: toastId });
+                setNotesModalList(prev => prev.filter(n => n.id !== noteId));
+                setModalNoteToDelete(null);
+            } else {
+                toast.error(json.message || "Failed to delete note", { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(err?.message || "Error deleting note", { id: toastId });
+        } finally {
+            setDeletingModalNoteId(null);
+        }
+    };
+
+    const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [isSearching, setIsSearching] = useState(false);
+    const [activePreset, setActivePreset] = useState<string | null>(null);
+
+    // Generate last 5 months options dynamically (e.g. Aug 2026, Jul 2026, etc.)
+    const getLast5MonthsOptions = () => {
+        const options: { label: string; start: string; end: string; key: string }[] = [];
+        const now = new Date();
+        for (let i = 0; i < 5; i++) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const label = d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+            const yyyy = d.getFullYear();
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const start = `${yyyy}-${mm}-01`;
+            const lastDay = new Date(yyyy, d.getMonth() + 1, 0).getDate();
+            const end = `${yyyy}-${mm}-${String(lastDay).padStart(2, '0')}`;
+            options.push({ label, start, end, key: `month_${i}` });
+        }
+        return options;
+    };
+
+    const MONTH_OPTIONS = getLast5MonthsOptions();
+
+    const PRESET_OPTIONS = [
+        { label: "Today", value: "today" },
+        { label: "Yesterday", value: "yesterday" },
+        { label: "Last 7 Days", value: "7days" },
+        { label: "Last 30 Days", value: "30days" },
+        { label: "This Month", value: "this_month" },
+        { label: "Last Month", value: "last_month" },
+        { label: "This Year", value: "this_year" },
+        { label: "Last Year", value: "last_year" },
+    ];
+
+    const applyPreset = (presetKey: string) => {
+        setActivePreset(presetKey);
+        const now = new Date();
+        const formatDateStr = (d: Date) => {
+            const yyyy = d.getFullYear();
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
+        };
+
+        let start = new Date();
+        let end = new Date();
+
+        if (presetKey === 'today') {
+            start = new Date();
+            end = new Date();
+        } else if (presetKey === 'yesterday') {
+            const y = new Date();
+            y.setDate(y.getDate() - 1);
+            start = y;
+            end = y;
+        } else if (presetKey === '7days') {
+            const d = new Date();
+            d.setDate(d.getDate() - 6);
+            start = d;
+            end = new Date();
+        } else if (presetKey === '30days') {
+            const d = new Date();
+            d.setDate(d.getDate() - 29);
+            start = d;
+            end = new Date();
+        } else if (presetKey === 'this_month') {
+            start = new Date(now.getFullYear(), now.getMonth(), 1);
+            end = new Date();
+        } else if (presetKey === 'last_month') {
+            start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+            end = new Date(now.getFullYear(), now.getMonth(), 0);
+        } else if (presetKey === 'this_year') {
+            start = new Date(now.getFullYear(), 0, 1);
+            end = new Date();
+        } else if (presetKey === 'last_year') {
+            start = new Date(now.getFullYear() - 1, 0, 1);
+            end = new Date(now.getFullYear() - 1, 11, 31);
+        }
+
+        setTempStartDate(formatDateStr(start));
+        setTempEndDate(formatDateStr(end));
+    };
+
+    const formatDateShort = (dStr: string) => {
+        if (!dStr) return "";
+        try {
+            const parts = dStr.split('-');
+            if (parts.length === 3) {
+                const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+                return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+            }
+            return dStr;
+        } catch {
+            return dStr;
+        }
+    };
+
+    // Debounce search effect (400ms delay) with URL sync
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(search);
+            const currentUrlSearch = searchParams?.get("search") || searchParams?.get("q") || "";
+            if (search.trim() !== currentUrlSearch) {
+                updateUrlParams({ search: search.trim() || null, page: 1 });
+            }
+        }, 400);
+        return () => clearTimeout(timer);
+    }, [search]);
+
+    // Fetch live orders and pipeline statuses
+    const fetchData = async (searchQuery: string = debouncedSearch) => {
+        setLoading(true);
+        setIsSearching(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const headers = { Authorization: `Bearer ${token}` };
+
+            let url = `/api/admin/orders?sort_by=${encodeURIComponent(sortBy)}&sort_order=${encodeURIComponent(sortOrder)}&per_page=${pageSize}&page=${page}`;
+            if (startDate) url += `&start_date=${startDate}`;
+            if (endDate) url += `&end_date=${endDate}`;
+            if (searchQuery.trim()) {
+                const q = encodeURIComponent(searchQuery.trim());
+                url += `&search=${q}&q=${q}`;
+            }
+            if (statusFilter && statusFilter !== "All") {
+                url += `&status=${encodeURIComponent(statusFilter)}`;
+            }
+            if (cgFilter && cgFilter !== "All") {
+                url += `&c_g=${encodeURIComponent(cgFilter)}`;
+            }
+
+            const [ordersRes, statusesRes] = await Promise.all([
+                fetch(url, { headers }),
+                statuses.length === 0 ? fetch("/api/admin/statuses", { headers }) : Promise.resolve(null)
+            ]);
+
+            const ordersData = await ordersRes.json();
+            if (statusesRes) {
+                const statusesData = await statusesRes.json();
+                if (statusesData.status || statusesData.success) {
+                    setStatuses(statusesData.data || []);
+                }
+            }
+
+            if (ordersData.status || ordersData.success) {
+                const items = ordersData.data || [];
+                setOrders(items);
+                const tCount = ordersData.total ?? ordersData.total_count ?? items.length;
+                const rCount = ordersData.total_records ?? tCount;
+                setTotalOrders(tCount);
+                setTotalRecords(rCount);
+
+                const calculatedTotalPages = Math.max(1, Math.ceil(tCount / pageSize));
+                if (page > calculatedTotalPages) {
+                    setPage(calculatedTotalPages);
+                    updateUrlParams({ page: calculatedTotalPages === 1 ? null : calculatedTotalPages });
+                }
+
+                if (ordersData.stats) {
+                    setApiStats(ordersData.stats);
+                } else {
+                    setApiStats(null);
+                }
+            } else {
+                setOrders([]);
+                setTotalOrders(0);
+                setTotalRecords(0);
+                setApiStats(null);
+            }
+        } catch (err) {
+            console.error("Failed to load orders data:", err);
+            toast.error("Failed to load orders");
+        } finally {
+            setLoading(false);
+            setIsSearching(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchData(debouncedSearch);
+    }, [debouncedSearch, startDate, endDate, statusFilter, cgFilter, pageSize, page, sortBy, sortOrder]);
+
+    const handleResetFilter = () => {
+        setSearch("");
+        setDebouncedSearch("");
+        setStatusFilter("In Production");
+        setCgFilter("All");
+        setStartDate("");
+        setEndDate("");
+        setTempStartDate("");
+        setTempEndDate("");
+        setActivePreset(null);
+        setSortBy("created_at");
+        setSortOrder("desc");
+        setPage(1);
+
+        updateUrlParams({
+            search: null,
+            q: null,
+            status: null,
+            c_g: null,
+            cg: null,
+            start_date: null,
+            end_date: null,
+            from: null,
+            to: null,
+            page: null,
+            per_page: null,
+            limit: null,
+            sort_by: null,
+            sort_order: null,
+            sort: null,
+            order: null
+        });
+    };
+
+    // Helper to parse delivery date string cleanly to YYYY-MM-DD format without timezone shift
+    const parseDeliveryDateToYYYYMMDD = (dateStr: string | null | undefined): string => {
+        if (!dateStr || dateStr === 'N/A') return '';
+        const str = String(dateStr).trim();
+        // If it contains time or UTC marker (e.g. 2026-10-09T18:30:00.000000Z), parse with Date to convert to local date
+        if (str.includes('T') || str.includes('Z')) {
+            const d = new Date(str);
+            if (!isNaN(d.getTime())) {
+                const year = d.getFullYear();
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                return `${year}-${month}-${day}`;
+            }
+        }
+        const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+        const d = new Date(str);
+        if (isNaN(d.getTime())) return '';
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    };
+
+    // Helper to get meta key value
+    const getMetaValue = (order: ApiOrder, key: string, fallback = "N/A") => {
+        if (!order || !order.metas) return fallback;
+        const found = order.metas.find(m => m && m.meta_key && m.meta_key.toLowerCase() === key.toLowerCase());
+        return found ? found.meta_value : fallback;
+    };
+
+    // Helper to format date as "25 Sept 2026" (date only, no time)
+    const formatDate = (dateString?: string | null) => {
+        if (!dateString || dateString === 'N/A') return 'N/A';
+        try {
+            const str = String(dateString).trim();
+            let d: Date;
+            if (str.includes('T') || str.includes('Z')) {
+                d = new Date(str);
+            } else {
+                const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                if (match) {
+                    const year = parseInt(match[1], 10);
+                    const month = parseInt(match[2], 10) - 1;
+                    const day = parseInt(match[3], 10);
+                    d = new Date(year, month, day);
+                } else {
+                    d = new Date(str);
+                }
+            }
+            if (isNaN(d.getTime())) return dateString;
+            return d.toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric'
+            });
+        } catch {
+            return dateString || 'N/A';
+        }
+    };
+
+    // Helper to check if delivery date is before today (only for non-completed orders)
+    const isPastDeliveryDate = (dateString?: string | null, status?: string | null) => {
+        if (!dateString || dateString === 'N/A') return false;
+        if (status) {
+            const s = status.toString().toLowerCase().trim();
+            if (['completed', 'shipped', 'delivered', 'cancelled', 'canceled'].includes(s)) {
+                return false;
+            }
+        }
+        try {
+            const str = String(dateString).trim();
+            let d: Date;
+            if (str.includes('T') || str.includes('Z')) {
+                d = new Date(str);
+            } else {
+                const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                if (match) {
+                    d = new Date(parseInt(match[1], 10), parseInt(match[2], 10) - 1, parseInt(match[3], 10));
+                } else {
+                    d = new Date(str);
+                }
+            }
+            if (isNaN(d.getTime())) return false;
+            const dDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            return dDate < today;
+        } catch {
+            return false;
+        }
+    };
+
+    // Filter logic
+    const filtered = orders.filter((o) => {
+        if (!o) return false;
+        const query = search.toLowerCase();
+        const orderNum = (o.order_number || "").toString().toLowerCase();
+        const boardName = (o.board_name || "").toString().toLowerCase();
+        const userEmail = (o.user_email || "").toString().toLowerCase();
+        const userMobile = (o.user_mobile || "").toString().toLowerCase();
+        const customerName = (o.customer_name || "").toString().toLowerCase();
+
+        // Gerber file name & URL search
+        const gerberFileName = getMetaValue(o, 'gerber_file_name', getMetaValue(o, 'gerber_name', getMetaValue(o, 'file_name', getMetaValue(o, 'gerber_file', '')))).toLowerCase();
+        const gerberUrl = getMetaValue(o, 'gerber_file_url', getMetaValue(o, 'gerber_url', getMetaValue(o, 'gerber_path', ''))).toLowerCase();
+
+        // Payment details search
+        const paymentId = (getMetaValue(o, 'payment_id', getMetaValue(o, 'razorpay_payment_id', getMetaValue(o, 'transaction_id', (o as any).payment_id || ''))) || "").toString().toLowerCase();
+        const paymentStatus = (getMetaValue(o, 'payment_status', (o as any).payment_status || "")).toString().toLowerCase();
+        const paymentMode = (getMetaValue(o, 'payment_mode', getMetaValue(o, 'payment_method', (o as any).payment_mode || ""))).toString().toLowerCase();
+        const orderValue = (o.order_value || "").toString().toLowerCase();
+
+        const filmVal = getMetaValue(o, 'film_datetime', getMetaValue(o, 'film_date', '')).toLowerCase();
+        const rawApplied = o.film_applied;
+        const metaApplied = getMetaValue(o, 'film_applied', '');
+        let isFilmApplied = false;
+        if (rawApplied === true || rawApplied === 1 || rawApplied === '1' || rawApplied === 'true' || rawApplied === 'yes') {
+            isFilmApplied = true;
+        } else if (metaApplied === '1' || metaApplied.toLowerCase() === 'true' || metaApplied.toLowerCase() === 'yes') {
+            isFilmApplied = true;
+        } else if (filmVal && filmVal !== 'n/a' && filmVal.trim() !== '') {
+            if (rawApplied !== false && rawApplied !== 0 && rawApplied !== '0' && rawApplied !== 'false' && rawApplied !== 'no' &&
+                metaApplied !== '0' && metaApplied.toLowerCase() !== 'false' && metaApplied.toLowerCase() !== 'no') {
+                isFilmApplied = true;
+            }
+        }
+        const filmStatus = isFilmApplied ? `yes ${filmVal} ${formatDate(filmVal).toLowerCase()}` : 'no';
+
+        const matchSearch =
+            orderNum.includes(query) ||
+            boardName.includes(query) ||
+            userEmail.includes(query) ||
+            userMobile.includes(query) ||
+            customerName.includes(query) ||
+            gerberFileName.includes(query) ||
+            gerberUrl.includes(query) ||
+            paymentId.includes(query) ||
+            paymentStatus.includes(query) ||
+            paymentMode.includes(query) ||
+            orderValue.includes(query) ||
+            filmStatus.includes(query);
+
+        let matchStatus = false;
+        const currentStatusStr = (o.status || "").toString().toLowerCase().trim();
+
+        if (statusFilter === "All") {
+            matchStatus = true;
+        } else if (statusFilter === "In Production") {
+            const excludedStatuses = ["pending", "completed", "cancelled", "canceled"];
+            matchStatus = !excludedStatuses.includes(currentStatusStr);
+        } else {
+            matchStatus = currentStatusStr === statusFilter.toLowerCase().trim();
+        }
+
+        return matchSearch && matchStatus;
+    });
+
+    const totalPages = Math.max(1, Math.ceil(totalOrders / (pageSize > 0 ? pageSize : 10)));
+    const paginated = orders;
+
+
+    // Open change status modal
+    const handleOpenStatusModal = (order: ApiOrder) => {
+        if (!hasChangeStatusPermission) return;
+        const isCompleted = ['completed', 'shipped', 'delivered'].includes((order.status || '').toLowerCase());
+        const totalQtyVal = parseInt(getMetaValue(order, 'qty', getMetaValue(order, 'quantity', '5'))) || 0;
+        const initialCompletedQty = typeof order.completed_qty === 'number' ? order.completed_qty : (isCompleted ? totalQtyVal : 0);
+        const initialPanelQty = order.panel_qty || 0;
+        const initialUpsQty = order.ups_qty || 0;
+        const initialLaunchQty = order.launch_qty || ((initialPanelQty > 0 && initialUpsQty > 0) ? (initialPanelQty * initialUpsQty) : 0);
+        const initialFinalQty = typeof order.final_qty === 'number' ? order.final_qty : initialCompletedQty;
+        const initialFailedQty = typeof order.failed_qty === 'number' ? order.failed_qty : (parseInt(getMetaValue(order, 'failed_qty', getMetaValue(order, 'fail_qty', '0')), 10) || 0);
+
+        const initialUserId = order.user_id ? String(order.user_id) : (order.user?.id ? String(order.user.id) : "");
+        const fallbackName = order.customer_name || (order.user ? (order.user.company_name || order.user.name || `${order.user.first_name || ''} ${order.user.last_name || ''}`.trim()) : "") || "";
+        setStatusModalOrder(order);
+        setModalOrderNumber(order.order_number ? String(order.order_number) : "");
+        const gerberFileName = (order as any).gerber_file?.original_name
+            || (order as any).gerber_file?.file_name
+            || (order as any).gerber_name
+            || (order as any).gerber_file_name
+            || (Array.isArray(order.metas) ? order.metas.find((m: any) => ['gerber_file_name', 'gerber_name'].includes(m.meta_key?.toLowerCase()))?.meta_value : null);
+
+        const defaultPn = (order.pn_number && String(order.pn_number).trim() !== "")
+            ? String(order.pn_number).trim()
+            : (gerberFileName
+                || (Array.isArray(order.metas) ? order.metas.find((m: any) => ['p_n', 'part_number', 'board_name'].includes(m.meta_key?.toLowerCase()))?.meta_value : null)
+                || order.board_name
+                || "");
+        setModalPnNumber(defaultPn);
+        setModalOrderNumberError("");
+        setModalNewStatus(order.status);
+        setModalCustomerName(fallbackName);
+        setModalUserId(initialUserId);
+        setCustomerSearch("");
+        setCustomerDropdownOpen(false);
+        const initialOrderQty = order.order_qty || parseInt(getMetaValue(order, 'qty', getMetaValue(order, 'quantity', '0'))) || 0;
+        setModalOrderQty(initialOrderQty);
+        setModalCompletedQty(initialCompletedQty);
+        setModalFailedQty(initialFailedQty);
+        setModalQNo(order.q_no ? String(order.q_no) : "");
+        setModalCg(order.c_g ? String(order.c_g).toUpperCase() : "");
+        setModalCombo(order.combo ? String(order.combo) : "");
+
+        let initialComboItems: ComboOrderItem[] = [];
+        if (Array.isArray(order.combo_orders) && order.combo_orders.length > 0) {
+            const seen = new Set<string>();
+            initialComboItems = order.combo_orders
+                .filter((c) => {
+                    const key = (c.order_number || String(c.id)).toUpperCase().trim();
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                })
+                .map((c) => ({
+                    id: c.id,
+                    order_number: c.order_number,
+                    status: c.status,
+                }));
+        } else if (order.combo && String(order.combo).trim() !== "") {
+            const parsed = Array.from(new Set(String(order.combo).split(/[\+,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean)));
+            initialComboItems = parsed.map((no, idx) => ({
+                id: 990000 + idx,
+                order_number: no,
+            }));
+        }
+        setModalComboOrders(initialComboItems);
+
+        setModalOldOrderNumber(order.old_order_number ? String(order.old_order_number) : "");
+        let initialOldItems: OldOrderItem[] = [];
+        if (Array.isArray(order.old_orders) && order.old_orders.length > 0) {
+            const seen = new Set<string>();
+            initialOldItems = order.old_orders
+                .filter((c) => {
+                    const key = (c.order_number || String(c.id)).toUpperCase().trim();
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                })
+                .map((c) => ({
+                    id: c.id,
+                    order_number: c.order_number,
+                    status: c.status,
+                }));
+        } else if (order.old_order_number && String(order.old_order_number).trim() !== "") {
+            const parsed = Array.from(new Set(String(order.old_order_number).split(/[\+,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean)));
+            initialOldItems = parsed.map((no, idx) => ({
+                id: 880000 + idx,
+                order_number: no,
+            }));
+        }
+        setModalOldOrders(initialOldItems);
+
+        setModalLaunchQty(initialLaunchQty);
+        setModalPanelQty(order.panel_qty || 0);
+        setModalUpsQty(order.ups_qty || 0);
+        setModalFinalQty(initialFinalQty);
+        setModalBillNumber(order.bill_number ? String(order.bill_number) : "");
+        setModalBillNumberError("");
+        const origDeliveryDate = parseDeliveryDateToYYYYMMDD(order.delivery_date);
+        setModalDeliveryDate(origDeliveryDate);
+        setModalOriginalDeliveryDate(origDeliveryDate);
+        setModalRemark("");
+    };
+    const openStatusModal = handleOpenStatusModal;
+
+    // Quick inline status change handler
+    const handleInlineStatusChange = async (order: ApiOrder, newStatus: string) => {
+        if (!hasChangeStatusPermission || order.status === newStatus) return;
+        const completedStatuses = ['completed', 'delivered', 'order completed', 'production completed'];
+        const isCompleted = completedStatuses.includes((newStatus || '').toLowerCase().trim());
+        const hasBillNumber = order.bill_number && String(order.bill_number).trim() !== '';
+
+        if (isCompleted && !hasBillNumber) {
+            toast.info(`Bill Number is required to set status to Completed for Order #${order.order_number}.`);
+            handleOpenStatusModal(order);
+            setModalNewStatus(newStatus);
+            setModalBillNumberError("Bill number is required when completing an order.");
+            return;
+        }
+
+        const toastId = toast.loading(`Updating Order #${order.order_number} status...`);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const res = await fetch(`/api/admin/orders/${order.id}`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    status: newStatus
+                })
+            });
+
+            const data = await res.json();
+            if (res.ok && (data.status || data.success)) {
+                toast.success(`Order #${order.order_number} status updated to "${newStatus}"`, { id: toastId });
+                fetchData(debouncedSearch);
+            } else {
+                const errMsg = data.errors?.bill_number?.[0] || data.message || "Failed to update status";
+                toast.error(errMsg, { id: toastId });
+                if (isCompleted) {
+                    handleOpenStatusModal(order);
+                    setModalNewStatus(newStatus);
+                    setModalBillNumberError(data.errors?.bill_number?.[0] || "Bill number is required when completing an order.");
+                }
+            }
+        } catch (err: any) {
+            console.error("Inline status update error:", err);
+            toast.error("Error updating status", { id: toastId });
+        }
+    };
+
+    // Submit status update
+    const handleStatusUpdateSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!statusModalOrder || !modalNewStatus) return;
+
+        setModalBillNumberError("");
+        setModalOrderNumberError("");
+
+        if (!modalOrderNumber || modalOrderNumber.trim() === "") {
+            setModalOrderNumberError("Order number is required.");
+            toast.error("Order number cannot be empty.");
+            return;
+        }
+
+        const completedStatuses = ['completed', 'delivered', 'order completed', 'production completed'];
+        const isCompleted = completedStatuses.includes((modalNewStatus || '').toLowerCase().trim());
+        if (isCompleted && (!modalBillNumber || modalBillNumber.trim() === "")) {
+            setModalBillNumberError("Bill number is required when completing an order.");
+            toast.error("Cannot change order status to Completed. Bill Number is required.");
+            return;
+        }
+
+        setUpdatingStatus(true);
+        try {
+            const token = localStorage.getItem("admin_token");
+            const comboOrderNos = Array.from(new Set(modalComboOrders.map((c) => c.order_number.trim()))).filter(Boolean);
+            const comboStr = comboOrderNos.join(", ");
+
+            const oldOrderNos = Array.from(new Set(modalOldOrders.map((c) => c.order_number.trim()))).filter(Boolean);
+            const oldOrderStr = oldOrderNos.join(", ");
+
+            const normCurrentDeliveryDate = parseDeliveryDateToYYYYMMDD(modalDeliveryDate);
+            const normOrigDeliveryDate = parseDeliveryDateToYYYYMMDD(modalOriginalDeliveryDate);
+            const hasDeliveryDateChanged = normCurrentDeliveryDate !== normOrigDeliveryDate;
+
+            const updatePayload: any = {
+                order_number: modalOrderNumber.trim(),
+                pn_number: modalPnNumber.trim(),
+                order_qty: modalOrderQty,
+                quantity: modalOrderQty,
+                status: modalNewStatus,
+                user_id: modalUserId ? Number(modalUserId) : null,
+                customer_name: modalCustomerName,
+                completed_qty: modalCompletedQty,
+                failed_qty: modalFailedQty,
+                q_no: modalQNo,
+                c_g: modalCg || null,
+                combo: comboStr,
+                combo_order_ids: comboOrderNos,
+                old_order_number: oldOrderStr,
+                old_order_ids: oldOrderNos,
+                launch_qty: modalLaunchQty,
+                panel_qty: modalPanelQty,
+                ups_qty: modalUpsQty,
+                final_qty: modalFinalQty,
+                bill_number: modalBillNumber.trim(),
+                remark: modalRemark
+            };
+
+            updatePayload.delivery_date = normCurrentDeliveryDate || null;
+
+            const res = await fetch(`/api/admin/orders/${statusModalOrder.id}`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify(updatePayload)
+            });
+
+            const data = await res.json();
+            if (res.ok && (data.status || data.success)) {
+                toast.success(`Order #${data.data?.order_number || modalOrderNumber.trim()} updated successfully`);
+                setStatusModalOrder(null);
+                fetchData(debouncedSearch);
+            } else {
+                const errMsg = data.errors?.order_number?.[0] || data.errors?.bill_number?.[0] || data.message || "Failed to update order";
+                if (data.errors?.order_number?.[0]) {
+                    setModalOrderNumberError(data.errors.order_number[0]);
+                }
+                if (data.errors?.bill_number?.[0]) {
+                    setModalBillNumberError(data.errors.bill_number[0]);
+                }
+                toast.error(errMsg);
+            }
+        } catch (err: any) {
+            console.error("Status update error:", err);
+            toast.error(err?.message || "Error updating status");
+        } finally {
+            setUpdatingStatus(false);
+        }
+    };
+
+    const headerActions = (
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            <Link href="/orders/import">
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="flex items-center gap-2 px-3.5 py-2 bg-card hover:bg-accent/60 border-border/80 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-foreground h-9 sm:h-10"
+                >
+                    <Upload className="w-3.5 h-3.5 text-emerald-500" />
+                    Import
+                </Button>
+            </Link>
+            <Link href="/orders/export">
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="flex items-center gap-2 px-3.5 py-2 bg-card hover:bg-accent/60 border-border/80 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer text-foreground h-9 sm:h-10"
+                >
+                    <Download className="w-3.5 h-3.5 text-emerald-500" />
+                    Export
+                </Button>
+            </Link>
+            {hasCreateOrderPermission && (
+                <Link
+                    href="/orders/create"
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer h-9 sm:h-10"
+                >
+                    <Plus className="w-4 h-4" />
+                    New Order
+                </Link>
+            )}
+        </div>
+    );
+
+    // Dynamic statistics based on current filtered orders or server-calculated stats (aggregating all matching records)
+    const statsTotalOrders = apiStats?.total_orders ?? totalOrders;
+    const statsActiveOrders = apiStats?.active_orders ?? orders.filter((o) => !['completed', 'shipped', 'delivered', 'cancelled', 'canceled'].includes((o.status || '').toLowerCase())).length;
+    const statsCompletedOrders = apiStats?.completed_orders ?? orders.filter((o) => ['completed', 'shipped', 'delivered'].includes((o.status || '').toLowerCase())).length;
+    const statsTotalOrderValue = apiStats?.total_value ?? orders.reduce((sum, o) => sum + (Number(o.order_value) || 0), 0);
+
+    // Quantity calculations: prefer backend stats calculated across all filtered orders matching status, fallback to page items
+    const nonPartFilteredOrders = orders.filter((o) => getMetaValue(o, 'product_type', 'pcb').toLowerCase() !== 'part');
+    const statsTotalQty = apiStats?.total_qty ?? apiStats?.ordered_qty ?? nonPartFilteredOrders.reduce((sum, o) => sum + (parseInt(getMetaValue(o, 'qty', getMetaValue(o, 'quantity', '5'))) || 0), 0);
+    const statsLaunchQty = apiStats?.launch_qty ?? nonPartFilteredOrders.reduce((sum, o) => {
+        const totalQ = parseInt(getMetaValue(o, 'qty', getMetaValue(o, 'quantity', '5'))) || 0;
+        const launch = typeof o.launch_qty === 'number' ? o.launch_qty : (parseInt(getMetaValue(o, 'launch_qty', String(totalQ))) || totalQ);
+        return sum + launch;
+    }, 0);
+    const statsCompletedQty = apiStats?.final_qty ?? apiStats?.completed_qty ?? nonPartFilteredOrders.reduce((sum, o) => {
+        const orderStatusStr = (o.status || '').toString().toLowerCase();
+        const totalQ = parseInt(getMetaValue(o, 'qty', getMetaValue(o, 'quantity', '5'))) || 0;
+        const isComp = ['completed', 'shipped', 'delivered'].includes(orderStatusStr);
+        const comp = typeof o.completed_qty === 'number' ? o.completed_qty : (isComp ? totalQ : 0);
+        return sum + comp;
+    }, 0);
+    const statsFailedQty = apiStats?.failed_qty ?? nonPartFilteredOrders.reduce((sum, o) => {
+        const fail = typeof o.failed_qty === 'number' ? o.failed_qty : (parseInt(getMetaValue(o, 'failed_qty', getMetaValue(o, 'fail_qty', '0')), 10) || 0);
+        return sum + fail;
+    }, 0);
+
+    return (
+        <DashboardLayout
+            title="Orders"
+            subtitle={`${totalOrders} orders listed${totalRecords ? ` (${totalRecords} total recorded)` : ""}`}
+            action={headerActions}
+        >
+            {loading ? (
+                <OrdersSkeleton />
+            ) : (
+                <div className="w-full space-y-5">
+                    {/* Stats Section */}
+                    {hasStatisticsPermission && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+                            {/* Total Orders */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0">
+                                    <ShoppingBag className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">Total Orders</p>
+                                    <h3 className="text-lg font-black text-foreground leading-tight mt-0.5 truncate">{statsTotalOrders}</h3>
+                                </div>
+                            </div>
+
+                            {/* In Progress */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-500 flex items-center justify-center shrink-0">
+                                    <Clock className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">In Progress</p>
+                                    <h3 className="text-lg font-black text-amber-500 leading-tight mt-0.5 truncate">{statsActiveOrders}</h3>
+                                </div>
+                            </div>
+
+                            {/* Completed */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-500 flex items-center justify-center shrink-0">
+                                    <CheckCircle2 className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">Completed</p>
+                                    <h3 className="text-lg font-black text-emerald-500 leading-tight mt-0.5 truncate">{statsCompletedOrders}</h3>
+                                </div>
+                            </div>
+
+                            {/* Total Value */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-500 flex items-center justify-center shrink-0">
+                                    <Package className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">Total Value</p>
+                                    <h3 className="text-lg font-black text-emerald-600 dark:text-emerald-400 leading-tight mt-0.5 truncate">
+                                        {hasPaymentPermission
+                                            ? `₹${statsTotalOrderValue.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
+                                            : "XXXX"}
+                                    </h3>
+                                </div>
+                            </div>
+
+                            {/* Ordered Qty */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-500 flex items-center justify-center shrink-0">
+                                    <Layers className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">Ordered Qty</p>
+                                    <h3 className="text-lg font-black text-foreground leading-tight mt-0.5 truncate">{statsTotalQty} <span className="text-[10px] text-muted-foreground font-bold">Pcs</span></h3>
+                                </div>
+                            </div>
+
+                            {/* Launch Qty */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0">
+                                    <Rocket className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">Launch Qty</p>
+                                    <h3 className="text-lg font-black text-blue-600 dark:text-blue-400 leading-tight mt-0.5 truncate">{statsLaunchQty} <span className="text-[10px] text-muted-foreground font-bold">Pcs</span></h3>
+                                </div>
+                            </div>
+
+                            {/* Final Qty */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-500 flex items-center justify-center shrink-0">
+                                    <CheckCircle2 className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">Final Qty</p>
+                                    <h3 className="text-lg font-black text-emerald-500 leading-tight mt-0.5 truncate">{statsCompletedQty} <span className="text-[10px] text-muted-foreground font-bold">Pcs</span></h3>
+                                </div>
+                            </div>
+
+                            {/* Failed Qty */}
+                            <div className="bg-card border border-border/80 rounded-xl p-2.5 shadow-2xs flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center shrink-0">
+                                    <AlertCircle className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider truncate">Failed Qty</p>
+                                    <h3 className="text-lg font-black text-rose-500 leading-tight mt-0.5 truncate">{statsFailedQty} <span className="text-[10px] text-muted-foreground font-bold">Pcs</span></h3>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Search & Filter Header Bar */}
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 w-full pb-1">
+                        <div className="relative flex-1 min-w-[200px]">
+                            {isSearching ? (
+                                <RefreshCw className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-500 animate-spin" />
+                            ) : (
+                                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                            )}
+                            <Input
+                                type="search"
+                                placeholder="Search orders by number, board, email, mobile..."
+                                value={search}
+                                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                                className="w-full h-10 sm:h-11 pl-10 pr-3 text-xs sm:text-sm bg-card border-border/80 rounded-xl placeholder:text-muted-foreground focus-visible:ring-emerald-500 font-medium transition-all shadow-xs"
+                            />
+                        </div>
+
+                        <div className="flex items-center gap-2.5 shrink-0">
+                            {/* C/G Filter Dropdown */}
+                            <Select
+                                value={cgFilter || "All"}
+                                onValueChange={(val) => {
+                                    handleSelectCg(val);
+                                }}
+                            >
+                                <SelectTrigger className="h-10 sm:h-11 min-w-[110px] px-3 bg-card border-border/80 rounded-xl text-xs sm:text-sm font-bold text-foreground hover:bg-accent/40 focus:outline-none focus:ring-1 focus:ring-emerald-500 shadow-xs cursor-pointer">
+                                    <SelectValue placeholder="C/G: All" />
+                                </SelectTrigger>
+                                <SelectContent className="font-semibold">
+                                    <SelectItem value="All">All C/G</SelectItem>
+                                    <SelectItem value="CASH">CASH</SelectItem>
+                                    <SelectItem value="GST">GST</SelectItem>
+                                    <SelectItem value="BOTH">BOTH</SelectItem>
+                                </SelectContent>
+                            </Select>
+
+                            {/* Popover Date Range & Presets Selector */}
+                            <Popover open={popoverOpen} onOpenChange={(open) => {
+                                setPopoverOpen(open);
+                                if (open) {
+                                    setTempStartDate(startDate);
+                                    setTempEndDate(endDate);
+                                }
+                            }}>
+                                <PopoverTrigger asChild>
+                                    <Button variant="outline" className="h-10 sm:h-11 min-w-[150px] sm:min-w-[170px] flex items-center justify-between gap-2 px-3.5 bg-card border-border/80 rounded-xl text-xs sm:text-sm font-bold text-foreground hover:bg-accent/40 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all shadow-xs shrink-0 cursor-pointer whitespace-nowrap">
+                                        <div className="flex items-center gap-2">
+                                            <CalendarIcon className="w-4 h-4 text-emerald-500 shrink-0" />
+                                            <span>
+                                                {activePreset
+                                                    ? PRESET_OPTIONS.find(p => p.value === activePreset)?.label || MONTH_OPTIONS.find(m => m.key === activePreset)?.label
+                                                    : startDate && endDate
+                                                        ? `${formatDateShort(startDate)} - ${formatDateShort(endDate)}`
+                                                        : startDate
+                                                            ? `From ${formatDateShort(startDate)}`
+                                                            : "Date Filter"}
+                                            </span>
+                                        </div>
+                                        {(startDate || endDate) && (
+                                            <span
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setStartDate("");
+                                                    setEndDate("");
+                                                    setTempStartDate("");
+                                                    setTempEndDate("");
+                                                    setActivePreset(null);
+                                                    setPage(1);
+                                                    updateUrlParams({ start_date: null, end_date: null, page: 1 });
+                                                }}
+                                                className="p-1 rounded-md hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors ml-1"
+                                                title="Clear date filter"
+                                            >
+                                                <X className="w-3.5 h-3.5" />
+                                            </span>
+                                        )}
+                                    </Button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                    className="z-50 w-80 sm:w-[360px] p-4 bg-card border-border/80 rounded-2xl shadow-xl space-y-4 text-foreground"
+                                    align="end"
+                                    sideOffset={8}
+                                >
+                                    <div className="flex items-center justify-between pb-2.5 border-b border-border/60">
+                                        <span className="text-xs font-black text-foreground uppercase tracking-wider flex items-center gap-1.5">
+                                            <CalendarIcon className="w-4 h-4 text-emerald-500" /> Select Date Range
+                                        </span>
+                                    </div>
+
+                                    {/* Side by Side Start & End Date Inputs */}
+                                    <div>
+                                        <span className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-wider block mb-1.5">Custom Date Range</span>
+                                        <div className="grid grid-cols-2 gap-2.5">
+                                            <div>
+                                                <label className="text-[10px] font-bold text-muted-foreground block mb-1">Start Date</label>
+                                                <Input
+                                                    type="date"
+                                                    value={tempStartDate}
+                                                    onChange={(e) => {
+                                                        setTempStartDate(e.target.value);
+                                                        setActivePreset(null);
+                                                    }}
+                                                    className="w-full bg-background border-border rounded-xl px-2.5 py-1.5 text-xs font-bold text-foreground focus-visible:ring-emerald-500 cursor-pointer shadow-2xs h-9"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold text-muted-foreground block mb-1">End Date</label>
+                                                <Input
+                                                    type="date"
+                                                    value={tempEndDate}
+                                                    onChange={(e) => {
+                                                        setTempEndDate(e.target.value);
+                                                        setActivePreset(null);
+                                                    }}
+                                                    className="w-full bg-background border-border rounded-xl px-2.5 py-1.5 text-xs font-bold text-foreground focus-visible:ring-emerald-500 cursor-pointer shadow-2xs h-9"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Last 5 Months Quick Options */}
+                                    <div className="pt-2 border-t border-border/60">
+                                        <span className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-wider block mb-2">Last 5 Months</span>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {MONTH_OPTIONS.map((m) => {
+                                                const isActive = activePreset === m.key;
+                                                return (
+                                                    <Button
+                                                        key={m.key}
+                                                        type="button"
+                                                        variant={isActive ? "default" : "outline"}
+                                                        size="sm"
+                                                        onClick={() => {
+                                                            setActivePreset(m.key);
+                                                            setTempStartDate(m.start);
+                                                            setTempEndDate(m.end);
+                                                        }}
+                                                        className={`px-3 py-1.5 text-xs font-extrabold rounded-xl transition-all h-auto cursor-pointer ${isActive
+                                                            ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-xs"
+                                                            : "bg-muted/40 hover:bg-muted text-foreground border-border/60"
+                                                            }`}
+                                                    >
+                                                        {m.label}
+                                                    </Button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+
+                                    {/* Action Buttons: Reset & Apply */}
+                                    <div className="pt-3 border-t border-border/60 flex items-center justify-end gap-2">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={() => {
+                                                setTempStartDate("");
+                                                setTempEndDate("");
+                                                setStartDate("");
+                                                setEndDate("");
+                                                setActivePreset(null);
+                                                setPage(1);
+                                                setPopoverOpen(false);
+                                                updateUrlParams({ start_date: null, end_date: null, page: 1 });
+                                            }}
+                                            className="px-3.5 py-1.5 text-xs font-bold rounded-xl border-border/80 text-foreground hover:bg-muted h-auto cursor-pointer"
+                                        >
+                                            Reset
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            onClick={() => {
+                                                setStartDate(tempStartDate);
+                                                setEndDate(tempEndDate);
+                                                setPage(1);
+                                                setPopoverOpen(false);
+                                                updateUrlParams({ start_date: tempStartDate || null, end_date: tempEndDate || null, page: 1 });
+                                            }}
+                                            className="px-4 py-1.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs h-auto cursor-pointer"
+                                        >
+                                            Apply
+                                        </Button>
+                                    </div>
+                                </PopoverContent>
+                            </Popover>
+
+                            {/* Compact Drag and Drop Status Filter */}
+                            {(() => {
+                                const MAIN_STATUSES = ["Pending", "Ready to Ship", "In Production"];
+                                const otherStatuses = (() => {
+                                    const list: string[] = ["All"];
+                                    statuses.forEach((s) => {
+                                        if (s && s.name && !MAIN_STATUSES.includes(s.name) && !list.includes(s.name)) {
+                                            list.push(s.name);
+                                        }
+                                    });
+                                    const defaults = ["Completed", "Cancelled", "On Hold", "Awaiting Approval"];
+                                    defaults.forEach((d) => {
+                                        if (!MAIN_STATUSES.includes(d) && !list.includes(d)) {
+                                            list.push(d);
+                                        }
+                                    });
+                                    return list;
+                                })();
+                                const isOtherStatusActive = !MAIN_STATUSES.includes(statusFilter);
+
+                                return (
+                                    <div
+                                        onDragOver={(e) => {
+                                            e.preventDefault();
+                                            e.dataTransfer.dropEffect = "copy";
+                                            setIsStatusDragOver(true);
+                                        }}
+                                        onDragLeave={() => setIsStatusDragOver(false)}
+                                        onDrop={(e) => {
+                                            e.preventDefault();
+                                            setIsStatusDragOver(false);
+                                            const dropped = e.dataTransfer.getData("text/plain");
+                                            if (dropped) {
+                                                handleSelectStatus(dropped);
+                                            }
+                                        }}
+                                        className={`flex flex-wrap items-center gap-1.5 sm:gap-2 p-1 sm:p-1.5 bg-card border rounded-xl shadow-xs transition-colors shrink-0 ${isStatusDragOver ? "border-emerald-500 bg-emerald-500/5 ring-2 ring-emerald-500/20" : "border-border/80"
+                                            }`}
+                                    >
+                                        <span className="text-xs font-bold text-muted-foreground px-1.5 sm:px-2 flex items-center gap-1 shrink-0 select-none">
+                                            Status:
+                                        </span>
+
+                                        {/* 1. Pending */}
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSelectStatus("Pending")}
+                                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border select-none ${statusFilter === "Pending"
+                                                    ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40 shadow-2xs"
+                                                    : "bg-background/60 hover:bg-accent text-foreground border-border/60"
+                                                }`}
+                                        >
+                                            <span className={`w-3.5 h-3.5 rounded flex items-center justify-center border text-[10px] transition-colors ${statusFilter === "Pending" ? "bg-amber-500 border-amber-500 text-white" : "border-muted-foreground/40 bg-background"
+                                                }`}>
+                                                {statusFilter === "Pending" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                                            </span>
+                                            Pending
+                                        </button>
+
+                                        {/* 2. Ready to Ship */}
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSelectStatus("Ready to Ship")}
+                                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border select-none ${statusFilter === "Ready to Ship"
+                                                    ? "bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/40 shadow-2xs"
+                                                    : "bg-background/60 hover:bg-accent text-foreground border-border/60"
+                                                }`}
+                                        >
+                                            <span className={`w-3.5 h-3.5 rounded flex items-center justify-center border text-[10px] transition-colors ${statusFilter === "Ready to Ship" ? "bg-blue-500 border-blue-500 text-white" : "border-muted-foreground/40 bg-background"
+                                                }`}>
+                                                {statusFilter === "Ready to Ship" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                                            </span>
+                                            Ready to Ship
+                                        </button>
+
+                                        {/* 3. In Production */}
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSelectStatus("In Production")}
+                                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border select-none ${statusFilter === "In Production"
+                                                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 shadow-2xs"
+                                                    : "bg-background/60 hover:bg-accent text-foreground border-border/60"
+                                                }`}
+                                        >
+                                            <span className={`w-3.5 h-3.5 rounded flex items-center justify-center border text-[10px] transition-colors ${statusFilter === "In Production" ? "bg-emerald-500 border-emerald-500 text-white" : "border-muted-foreground/40 bg-background"
+                                                }`}>
+                                                {statusFilter === "In Production" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                                            </span>
+                                            In Production
+                                        </button>
+
+                                        {/* Drop Status Container */}
+                                        <div
+                                            onDragOver={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                e.dataTransfer.dropEffect = "copy";
+                                                setIsStatusDragOver(true);
+                                            }}
+                                            onDragLeave={(e) => {
+                                                e.stopPropagation();
+                                                setIsStatusDragOver(false);
+                                            }}
+                                            onDrop={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                setIsStatusDragOver(false);
+                                                const dropped = e.dataTransfer.getData("text/plain");
+                                                if (dropped) {
+                                                    handleSelectStatus(dropped);
+                                                }
+                                            }}
+                                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border ${isStatusDragOver
+                                                    ? "border-emerald-500 bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold border-dashed scale-[1.02]"
+                                                    : isOtherStatusActive
+                                                        ? "border-purple-500/40 bg-purple-500/15 text-purple-700 dark:text-purple-300 font-bold border-solid shadow-2xs"
+                                                        : "border-dashed border-border/80 bg-muted/30 text-muted-foreground"
+                                                }`}
+                                        >
+                                            {isOtherStatusActive ? (
+                                                <div className="flex items-center gap-1.5 select-none">
+                                                    <span className="w-3.5 h-3.5 rounded bg-purple-500 text-white flex items-center justify-center text-[10px]">
+                                                        <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                                    </span>
+                                                    <span>{statusFilter}</span>
+                                                    <span
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            handleSelectStatus("In Production");
+                                                        }}
+                                                        className="ml-1 p-0.5 rounded-md hover:bg-purple-500/20 text-purple-500 hover:text-purple-700 cursor-pointer"
+                                                        title="Clear status filter"
+                                                    >
+                                                        <X className="w-3 h-3" />
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <span className="select-none text-[11px] sm:text-xs">
+                                                    {isStatusDragOver ? "Drop status here" : "[ Drop status here ]"}
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        {/* Expandable "Other Statuses" Panel */}
+                                        <Popover open={otherStatusesOpen} onOpenChange={setOtherStatusesOpen}>
+                                            <PopoverTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    className={`h-8 sm:h-9 px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer shrink-0 ${isOtherStatusActive
+                                                            ? "border-purple-500/50 bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                                                            : "border-border/80 bg-background/60 hover:bg-accent text-foreground"
+                                                        }`}
+                                                >
+                                                    [ Other Statuses ]
+                                                    <ChevronDown className={`w-3.5 h-3.5 ml-1 transition-transform duration-200 ${otherStatusesOpen ? "rotate-180" : ""}`} />
+                                                </Button>
+                                            </PopoverTrigger>
+                                            <PopoverContent
+                                                className="z-50 w-56 sm:w-64 p-2 bg-card border border-border/80 rounded-xl shadow-xl space-y-1 text-foreground"
+                                                align="end"
+                                                sideOffset={6}
+                                            >
+                                                <div className="px-2 py-1.5 border-b border-border/50 flex items-center justify-between">
+                                                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                                                        Other Statuses
+                                                    </span>
+                                                    <span className="text-[10px] text-muted-foreground/70 font-medium">
+                                                        Drag or click
+                                                    </span>
+                                                </div>
+
+                                                <div className="max-h-56 overflow-y-auto space-y-1 pr-1 scrollbar-thin">
+                                                    {otherStatuses.map((stName) => {
+                                                        const isSelected = statusFilter === stName;
+                                                        return (
+                                                            <div
+                                                                key={stName}
+                                                                draggable
+                                                                onDragStart={(e) => {
+                                                                    e.dataTransfer.setData("text/plain", stName);
+                                                                    e.dataTransfer.effectAllowed = "copy";
+                                                                }}
+                                                                onClick={() => {
+                                                                    handleSelectStatus(stName);
+                                                                    setOtherStatusesOpen(false);
+                                                                }}
+                                                                className={`group flex items-center justify-between p-2 rounded-lg text-xs font-semibold cursor-grab active:cursor-grabbing transition-all border ${isSelected
+                                                                        ? "bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/30 shadow-2xs"
+                                                                        : "bg-background hover:bg-muted/70 text-foreground border-transparent hover:border-border/50"
+                                                                    }`}
+                                                            >
+                                                                <div className="flex items-center gap-2 min-w-0">
+                                                                    <GripVertical className="w-3.5 h-3.5 text-muted-foreground/50 group-hover:text-muted-foreground shrink-0" />
+                                                                    <span className="truncate">{stName}</span>
+                                                                </div>
+                                                                {isSelected && (
+                                                                    <span className="w-4 h-4 rounded-full bg-purple-500 text-white flex items-center justify-center shrink-0">
+                                                                        <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </PopoverContent>
+                                        </Popover>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    </div>
+
+                    {/* Orders Data Table */}
+                    <div className="bg-card border border-border/80 rounded-xl overflow-hidden shadow-sm">
+                        {loading || isSearching ? (
+                            <div className="p-5 space-y-4">
+                                <div className="flex items-center justify-between pb-3 border-b border-border/40">
+                                    <div className="h-4 bg-muted/60 rounded-md animate-pulse w-36" />
+                                    <div className="h-4 bg-muted/60 rounded-md animate-pulse w-24" />
+                                </div>
+                                {[1, 2, 3, 4, 5].map((i) => (
+                                    <div key={i} className="p-4 border-b border-border/40 flex items-center justify-between gap-4">
+                                        <div className="h-7 bg-muted/60 rounded-lg animate-pulse w-28 shrink-0" />
+                                        <div className="h-5 bg-muted/40 rounded-md animate-pulse w-12 shrink-0" />
+                                        <div className="h-5 bg-muted/40 rounded-md animate-pulse w-44 shrink-0" />
+                                        <div className="h-5 bg-muted/40 rounded-md animate-pulse w-32 shrink-0" />
+                                        <div className="h-5 bg-muted/40 rounded-md animate-pulse w-32 shrink-0" />
+                                        <div className="h-5 bg-muted/40 rounded-md animate-pulse w-32 shrink-0" />
+                                        <div className="h-5 bg-muted/40 rounded-md animate-pulse w-32 shrink-0" />
+                                        <div className="h-8 bg-muted/60 rounded-xl animate-pulse w-24 shrink-0" />
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-xs border-collapse">
+                                    <thead>
+                                        <tr className="bg-muted/80 border-b border-border/80 text-foreground uppercase tracking-wider font-extrabold text-[11px]">
+                                            <th
+                                                onClick={() => handleSort('status')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Status"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>Status</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'status' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'status' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th className="py-2 px-3.5 whitespace-nowrap">
+                                                Q No.
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('order_number')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Order Number"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>Order Number</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'order_number' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'order_number' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th className="py-2 px-3.5 whitespace-nowrap">
+                                                Bill Number
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('c_g')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by C/G"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>C/G</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'c_g' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'c_g' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('customer_name')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Customer Name"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>Customer</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'customer_name' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'customer_name' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('layers')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Layers"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>Layers</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'layers' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'layers' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('film_applied')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Film"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>Film</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'film_applied' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'film_applied' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('order_qty')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Quantity"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>QTY / LAUNCH / PANEL / UP / FINAL / FAIL</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'order_qty' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'order_qty' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('created_at')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Order Date"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>Order Date</span>
+                                                    <span className={`inline-flex items-center ${(sortBy === 'created_at' || sortBy === 'order_date') ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {(sortBy === 'created_at' || sortBy === 'order_date') ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th
+                                                onClick={() => handleSort('delivery_date')}
+                                                className="py-2 px-3.5 cursor-pointer select-none hover:bg-muted/90 transition-colors group"
+                                                title="Click to sort by Delivery Date"
+                                            >
+                                                <div className="flex items-center gap-1">
+                                                    <span>Delivery Date</span>
+                                                    <span className={`inline-flex items-center ${sortBy === 'delivery_date' ? "text-emerald-600 dark:text-emerald-400 font-bold opacity-100" : "opacity-35 group-hover:opacity-75"}`}>
+                                                        {sortBy === 'delivery_date' ? (sortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />) : <ChevronDown className="w-3.5 h-3.5" />}
+                                                    </span>
+                                                </div>
+                                            </th>
+                                            <th className="py-2 px-3.5 text-right">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-border/40">
+                                        {paginated.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={11} className="px-5 py-16 text-center text-muted-foreground text-sm font-medium">
+                                                    No orders matched your search or status filter.
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            paginated.map((order) => {
+                                                const orderStatusStr = (order?.status || 'Pending').toString().toLowerCase();
+                                                const matchedStatus = statuses.find(s => s && s.name && s.name.toString().toLowerCase() === orderStatusStr);
+                                                const statusColor = getStatusColor(order.status, matchedStatus);
+                                                const pcbColorVal = getMetaValue(order, 'pcb_color', getMetaValue(order, 'solder_mask', 'Green'));
+                                                const orderNumColor = getPcbColorCode(pcbColorVal);
+                                                const layerCount = getMetaValue(order, 'layers', getMetaValue(order, 'layer', '2'));
+
+                                                const totalQty = typeof order.order_qty === 'number' && order.order_qty > 0
+                                                    ? order.order_qty
+                                                    : (parseInt(getMetaValue(order, 'qty', getMetaValue(order, 'quantity', '0')), 10) || order.order_qty || 0);
+
+                                                const launchQty = typeof order.launch_qty === 'number'
+                                                    ? order.launch_qty
+                                                    : (parseInt(getMetaValue(order, 'launch_qty', '0'), 10) || 0);
+
+                                                const panelQty = typeof order.panel_qty === 'number'
+                                                    ? order.panel_qty
+                                                    : (parseInt(getMetaValue(order, 'panel_qty', getMetaValue(order, 'panel', getMetaValue(order, 'panels', '0'))), 10) || 0);
+
+                                                const upsQty = typeof order.ups_qty === 'number'
+                                                    ? order.ups_qty
+                                                    : (parseInt(getMetaValue(order, 'ups_qty', getMetaValue(order, 'ups', getMetaValue(order, 'up', '0'))), 10) || 0);
+
+                                                const isCompleted = ['completed', 'shipped', 'delivered'].includes(orderStatusStr);
+                                                const completedQty = typeof order.final_qty === 'number'
+                                                    ? order.final_qty
+                                                    : (typeof order.completed_qty === 'number'
+                                                        ? order.completed_qty
+                                                        : (parseInt(getMetaValue(order, 'final_qty', getMetaValue(order, 'completed_qty', '0')), 10) || 0));
+
+                                                const failedQty = typeof order.failed_qty === 'number'
+                                                    ? order.failed_qty
+                                                    : (parseInt(getMetaValue(order, 'failed_qty', getMetaValue(order, 'fail_qty', '0')), 10) || 0);
+
+                                                const pendingQty = Math.max(0, totalQty - completedQty - failedQty);
+                                                const productTypeVal = getMetaValue(order, 'product_type', 'pcb').toLowerCase();
+                                                const isPartOrder = productTypeVal === 'part';
+
+                                                const createdDateFormatted = formatDate(order.created_at);
+
+                                                return (
+                                                    <tr key={order.id} className="hover:bg-muted/20 transition-colors">
+                                                        {/* 1. Status */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-black uppercase tracking-wider bg-white text-black border border-zinc-300 shadow-2xs">
+                                                                {order.status}
+                                                            </span>
+                                                        </td>
+                                                        {/* Q No. */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            <span className="font-mono text-xs font-bold">
+                                                                {order.q_no || "—"}
+                                                            </span>
+                                                        </td>
+                                                        {/* 2. Order Number */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            {hasChangeStatusPermission ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => openStatusModal(order)}
+                                                                    title="Click to Change Status"
+                                                                    className="font-mono text-xs font-black px-2 py-0.5 rounded-md border transition-all cursor-pointer hover:opacity-85 hover:scale-105 active:scale-95 shadow-2xs"
+                                                                    style={{
+                                                                        color: isPartOrder ? "#2563eb" : orderNumColor,
+                                                                        backgroundColor: isPartOrder ? "#2563eb15" : `${orderNumColor}15`,
+                                                                        borderColor: isPartOrder ? "#2563eb35" : `${orderNumColor}35`
+                                                                    }}
+                                                                >
+                                                                    #{order.order_number}
+                                                                </button>
+                                                            ) : (
+                                                                <span
+                                                                    className="font-mono text-xs font-black px-2 py-0.5 rounded-md border shadow-2xs"
+                                                                    style={{
+                                                                        color: isPartOrder ? "#2563eb" : orderNumColor,
+                                                                        backgroundColor: isPartOrder ? "#2563eb15" : `${orderNumColor}15`,
+                                                                        borderColor: isPartOrder ? "#2563eb35" : `${orderNumColor}35`
+                                                                    }}
+                                                                >
+                                                                    #{order.order_number}
+                                                                </span>
+                                                            )}
+                                                            {((order.combo && String(order.combo).trim() !== "") || (Array.isArray(order.combo_orders) && order.combo_orders.length > 0)) && (
+                                                                <div className="mt-1 flex flex-wrap items-center gap-1">
+                                                                    {(() => {
+                                                                        const rawComboList = Array.isArray(order.combo_orders) && order.combo_orders.length > 0
+                                                                            ? order.combo_orders.map(c => c.order_number)
+                                                                            : String(order.combo || '').split(/[\+,\s]+/).filter(Boolean);
+                                                                        const comboList = Array.from(new Set(rawComboList.map(s => String(s).trim()).filter(Boolean)));
+
+                                                                        if (comboList.length === 0) return null;
+
+                                                                        return (
+                                                                            <span
+                                                                                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/80 shadow-2xs hover:bg-indigo-100 transition-colors"
+                                                                                title={`Combo Orders: ${comboList.join(', ')}`}
+                                                                            >
+                                                                                <Layers className="w-2.5 h-2.5 text-indigo-500 shrink-0" />
+                                                                                <span className="font-semibold text-indigo-600">Combo:</span>
+                                                                                <span className="font-mono font-bold text-indigo-800">
+                                                                                    {comboList.map(c => (c.startsWith('#') || c.startsWith('M') || c.startsWith('J') ? c : `#${c}`)).join(', ')}
+                                                                                </span>
+                                                                            </span>
+                                                                        );
+                                                                    })()}
+                                                                </div>
+                                                            )}
+                                                            {((order.old_order_number && String(order.old_order_number).trim() !== "") || (Array.isArray(order.old_orders) && order.old_orders.length > 0)) && (
+                                                                <div className="mt-1 flex flex-wrap items-center gap-1">
+                                                                    {(() => {
+                                                                        const rawOldList = Array.isArray(order.old_orders) && order.old_orders.length > 0
+                                                                            ? order.old_orders.map(c => c.order_number)
+                                                                            : String(order.old_order_number || '').split(/[\+,\s]+/).filter(Boolean);
+                                                                        const oldList = Array.from(new Set(rawOldList.map(s => String(s).trim()).filter(Boolean)));
+
+                                                                        if (oldList.length === 0) return null;
+
+                                                                        return (
+                                                                            <span
+                                                                                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 shadow-2xs hover:bg-amber-100 transition-colors"
+                                                                                title={`Old Order Numbers: ${oldList.join(', ')}`}
+                                                                            >
+                                                                                <History className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                                                                                <span className="font-semibold text-amber-700">Old Order:</span>
+                                                                                <span className="font-mono font-bold text-amber-900">
+                                                                                    {oldList.map(c => (c.startsWith('#') || c.startsWith('M') || c.startsWith('J') ? c : `#${c}`)).join(', ')}
+                                                                                </span>
+                                                                            </span>
+                                                                        );
+                                                                    })()}
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        {/* Bill Number */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            <span
+                                                                className={`font-mono text-xs font-bold px-2 py-0.5 rounded-md border ${order.bill_number && String(order.bill_number).trim() !== ""
+                                                                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                                                                        : "text-muted-foreground bg-muted/30 border-border/60"
+                                                                    }`}
+                                                            >
+                                                                {order.bill_number && String(order.bill_number).trim() !== ""
+                                                                    ? order.bill_number
+                                                                    : "—"}
+                                                            </span>
+                                                        </td>
+                                                        {/* C/G */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            <span
+                                                                className={`font-mono text-[11px] font-extrabold px-2 py-0.5 rounded-md border ${order.c_g
+                                                                        ? order.c_g === 'GST'
+                                                                            ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/20"
+                                                                            : order.c_g === 'CASH'
+                                                                                ? "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/20"
+                                                                                : "text-purple-700 dark:text-purple-400 bg-purple-500/10 border-purple-500/20"
+                                                                        : "text-muted-foreground/60 bg-muted/20 border-border/40"
+                                                                    }`}
+                                                            >
+                                                                {order.c_g || "—"}
+                                                            </span>
+                                                        </td>
+                                                        {/* 3. Customer */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            {(() => {
+                                                                const customerId = order.user_id || order.user?.id;
+                                                                const custDisplayName = order.user?.company_name || order.user?.name || order.customer_name || (order.user_email ? order.user_email : null);
+
+                                                                if (!custDisplayName && !customerId) {
+                                                                    return <span className="text-muted-foreground font-medium text-xs">—</span>;
+                                                                }
+
+                                                                const displayText = custDisplayName || `Customer #${customerId}`;
+
+                                                                if (customerId) {
+                                                                    return (
+                                                                        <Link
+                                                                            href={`/clients/${customerId}`}
+                                                                            onClick={(e) => e.stopPropagation()}
+                                                                            title={displayText}
+                                                                            className="inline-flex items-center gap-1 font-bold text-xs text-foreground hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline transition-colors max-w-[170px] truncate"
+                                                                        >
+                                                                            <span className="truncate">{displayText}</span>
+                                                                        </Link>
+                                                                    );
+                                                                }
+
+                                                                return (
+                                                                    <span title={displayText} className="font-semibold text-xs text-muted-foreground max-w-[170px] truncate block">
+                                                                        {displayText}
+                                                                    </span>
+                                                                );
+                                                            })()}
+                                                        </td>
+
+                                                        {/* 3. Layers */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            {isPartOrder ? (
+                                                                <span className="px-2.5 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-extrabold text-xs uppercase tracking-wider">
+                                                                    Part
+                                                                </span>
+                                                            ) : (
+                                                                <span className="px-2 py-0.5 rounded-lg text-foreground font-extrabold text-xs">
+                                                                    {(() => {
+                                                                        const rawVal = (layerCount || '').toString().trim();
+                                                                        if (!rawVal) return '2 Layers';
+                                                                        if (rawVal.toLowerCase().includes('layer')) return rawVal;
+                                                                        return `${rawVal} ${parseInt(rawVal, 10) === 1 ? 'Layer' : 'Layers'}`;
+                                                                    })()}
+                                                                </span>
+                                                            )}
+                                                        </td>
+
+                                                        {/* 4. Film */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap text-xs">
+                                                            {isPartOrder ? (
+                                                                <span className="text-muted-foreground font-bold px-2">-</span>
+                                                            ) : (() => {
+                                                                const filmVal = getMetaValue(order, 'film_datetime', getMetaValue(order, 'film_date', ''));
+                                                                const rawApplied = order.film_applied;
+                                                                const metaApplied = getMetaValue(order, 'film_applied', '');
+                                                                let hasFilm = false;
+                                                                if (rawApplied === true || rawApplied === 1 || rawApplied === '1' || rawApplied === 'true' || rawApplied === 'yes') {
+                                                                    hasFilm = true;
+                                                                } else if (metaApplied === '1' || metaApplied.toLowerCase() === 'true' || metaApplied.toLowerCase() === 'yes') {
+                                                                    hasFilm = true;
+                                                                } else if (filmVal && filmVal !== 'N/A' && filmVal.trim() !== '') {
+                                                                    if (rawApplied !== false && rawApplied !== 0 && rawApplied !== '0' && rawApplied !== 'false' && rawApplied !== 'no' &&
+                                                                        metaApplied !== '0' && metaApplied.toLowerCase() !== 'false' && metaApplied.toLowerCase() !== 'no') {
+                                                                        hasFilm = true;
+                                                                    }
+                                                                }
+                                                                if (hasFilm) {
+                                                                    return (
+                                                                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-extrabold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-sans">
+                                                                            Yes
+                                                                        </span>
+                                                                    );
+                                                                }
+                                                                return (
+                                                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-extrabold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 font-sans">
+                                                                        No
+                                                                    </span>
+                                                                );
+                                                            })()}
+                                                        </td>
+
+                                                        {/* 5. Qty (Ordered / Launch / Panel / Up / Final / Fail) */}
+                                                        <td className="py-1.5 px-3.5 whitespace-nowrap">
+                                                            <div className="flex items-center gap-1 font-bold text-xs">
+                                                                <span className="text-foreground font-extrabold" title="Ordered Quantity">
+                                                                    {totalQty} Pcs
+                                                                </span>
+                                                                <span className="text-muted-foreground ml-0.5">(</span>
+                                                                <span className="text-blue-600 dark:text-blue-400 font-extrabold" title="Launch Quantity">
+                                                                    {launchQty} Lnc
+                                                                </span>
+                                                                <span className="text-muted-foreground">/</span>
+                                                                <span className="text-amber-600 dark:text-amber-400 font-extrabold" title="Panel Quantity">
+                                                                    {panelQty} Panel
+                                                                </span>
+                                                                <span className="text-muted-foreground">/</span>
+                                                                <span className="text-indigo-600 dark:text-indigo-400 font-extrabold" title="Up Quantity">
+                                                                    {upsQty} Up
+                                                                </span>
+                                                                <span className="text-muted-foreground">/</span>
+                                                                <span className="text-emerald-600 dark:text-emerald-400 font-extrabold" title="Final / Completed Quantity">
+                                                                    {completedQty} Final
+                                                                </span>
+                                                                <span className="text-muted-foreground">/</span>
+                                                                <span className="text-rose-600 dark:text-rose-400 font-extrabold" title="Failed Quantity">
+                                                                    {failedQty} Fail
+                                                                </span>
+                                                                <span className="text-muted-foreground">)</span>
+                                                            </div>
+                                                        </td>
+
+                                                        {/* 6. Order Date */}
+                                                        <td className="py-1.5 px-3.5 font-bold text-foreground font-mono text-xs whitespace-nowrap">
+                                                            {createdDateFormatted}
+                                                        </td>
+
+                                                        {/* 7. Delivery Date */}
+                                                        <td className={`py-1.5 px-3.5 font-bold font-mono text-xs whitespace-nowrap ${isPastDeliveryDate(order.delivery_date, order.status) ? "text-red-500 font-extrabold" : "text-foreground"}`}>
+                                                            {formatDate(order.delivery_date)}
+                                                        </td>
+
+                                                        {/* 8. Actions */}
+                                                        <td className="py-1.5 px-3.5 text-right whitespace-nowrap">
+                                                            <div className="inline-flex items-center justify-end gap-1">
+                                                                {/* Change Status Icon Button */}
+                                                                {hasChangeStatusPermission && (
+                                                                    <button
+                                                                        onClick={() => openStatusModal(order)}
+                                                                        title="Change Status"
+                                                                        aria-label="Change Status"
+                                                                        className="p-1.5 bg-amber-500/10 hover:bg-amber-500 hover:text-white text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-lg transition-all cursor-pointer shadow-2xs group relative"
+                                                                    >
+                                                                        <RefreshCw className="w-3.5 h-3.5" />
+                                                                    </button>
+                                                                )}
+
+                                                                {/* Add/Edit Film Icon Button */}
+                                                                {hasAddFilmPermission && !isPartOrder && (() => {
+                                                                    const existingFilm = getMetaValue(order, 'film_datetime', getMetaValue(order, 'film_date', ''));
+                                                                    const hasFilm = existingFilm && existingFilm !== 'N/A';
+                                                                    return (
+                                                                        <button
+                                                                            onClick={() => openFilmModal(order)}
+                                                                            title={hasFilm ? `Edit Film (${existingFilm})` : "Add Film"}
+                                                                            aria-label="Add Film"
+                                                                            className={`p-1.5 rounded-lg border transition-all cursor-pointer shadow-2xs ${hasFilm
+                                                                                ? "bg-purple-500/20 text-purple-700 dark:text-purple-300 border-purple-500/40 hover:bg-purple-500 hover:text-white"
+                                                                                : "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20 hover:bg-purple-500 hover:text-white"
+                                                                                }`}
+                                                                        >
+                                                                            <Film className="w-3.5 h-3.5" />
+                                                                        </button>
+                                                                    );
+                                                                })()}
+
+                                                                {/* Generate Job Card Icon Button */}
+                                                                {hasGenerateJobCardPermission && !isPartOrder && (
+                                                                    <button
+                                                                        onClick={() => openJobCardModal(order)}
+                                                                        title="Generate Job Card"
+                                                                        aria-label="Generate Job Card"
+                                                                        className="p-1.5 bg-indigo-500/10 hover:bg-indigo-500 hover:text-white text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 rounded-lg transition-all cursor-pointer shadow-2xs"
+                                                                    >
+                                                                        <FileText className="w-3.5 h-3.5" />
+                                                                    </button>
+                                                                )}
+
+                                                                {/* View Activity Logs Icon Button */}
+                                                                {hasViewLogsPermission && (
+                                                                    <button
+                                                                        onClick={() => openLogsModal(order)}
+                                                                        title="View Order Logs"
+                                                                        aria-label="View Order Logs"
+                                                                        className="p-1.5 bg-blue-500/10 hover:bg-blue-500 hover:text-white text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-lg transition-all cursor-pointer shadow-2xs"
+                                                                    >
+                                                                        <History className="w-3.5 h-3.5" />
+                                                                    </button>
+                                                                )}
+
+                                                                {/* Internal Notes Icon Button */}
+                                                                <button
+                                                                    onClick={() => openNotesModal(order)}
+                                                                    title="Internal Notes"
+                                                                    aria-label="Internal Notes"
+                                                                    className="p-1.5 bg-amber-500/10 hover:bg-amber-500 hover:text-white text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-lg transition-all cursor-pointer shadow-2xs"
+                                                                >
+                                                                    <ClipboardList className="w-3.5 h-3.5" />
+                                                                </button>
+
+                                                                {/* Reorder Icon Button */}
+                                                                {hasReorderPermission && !isPartOrder && (
+                                                                    <button
+                                                                        onClick={() => handleOpenReorderModal(order)}
+                                                                        title="Reorder"
+                                                                        aria-label="Reorder"
+                                                                        className="p-1.5 bg-blue-500/10 hover:bg-blue-600 hover:text-white text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-lg transition-all cursor-pointer shadow-2xs"
+                                                                    >
+                                                                        <Copy className="w-3.5 h-3.5" />
+                                                                    </button>
+                                                                )}
+
+                                                                {/* View Detail Page Icon Button */}
+                                                                <Link
+                                                                    href={`/orders/${order.order_number}`}
+                                                                    title="View Order Details"
+                                                                    aria-label="View Order Details"
+                                                                    className="p-1.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-lg hover:bg-emerald-500 hover:text-white transition-all cursor-pointer shadow-2xs"
+                                                                >
+                                                                    <ExternalLink className="w-3.5 h-3.5" />
+                                                                </Link>
+
+                                                                {/* Delete Order Icon Button */}
+                                                                {hasDeleteOrderPermission && (
+                                                                    <button
+                                                                        onClick={() => setDeleteModalOrder(order)}
+                                                                        title="Delete Order"
+                                                                        aria-label="Delete Order"
+                                                                        className="p-1.5 bg-rose-500/10 hover:bg-rose-600 hover:text-white text-rose-600 dark:text-rose-400 border border-rose-500/20 rounded-lg transition-all cursor-pointer shadow-2xs"
+                                                                    >
+                                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                        {/* Pagination Footer */}
+                        <div className="p-3 border-t border-border/60 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted-foreground font-medium bg-card">
+                            <div className="flex items-center gap-3">
+                                <span>
+                                    Showing <strong className="text-foreground">{totalOrders === 0 ? 0 : (page - 1) * pageSize + 1}</strong> to{" "}
+                                    <strong className="text-foreground">{Math.min(page * pageSize, totalOrders)}</strong> of{" "}
+                                    <strong className="text-foreground">{totalOrders}</strong> orders
+                                </span>
+                                <div className="flex items-center gap-1.5 ml-2 pl-3 border-l border-border/60">
+                                    <span className="text-[11px] font-bold text-muted-foreground whitespace-nowrap">Rows per page:</span>
+                                    <select
+                                        value={pageSize}
+                                        onChange={(e) => {
+                                            const newSize = Number(e.target.value);
+                                            setPageSize(newSize);
+                                            setPage(1);
+                                            updateUrlParams({ per_page: newSize === 10 ? null : newSize, page: 1 });
+                                        }}
+                                        className="px-2 py-1 bg-card border border-border/80 rounded-lg text-foreground font-bold text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer shadow-2xs"
+                                    >
+                                        <option value={10}>10</option>
+                                        <option value={20}>20</option>
+                                        <option value={50}>50</option>
+                                        <option value={100}>100</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    disabled={page <= 1}
+                                    onClick={() => {
+                                        const newPage = Math.max(1, page - 1);
+                                        setPage(newPage);
+                                        updateUrlParams({ page: newPage === 1 ? null : newPage });
+                                    }}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-border/80 bg-card hover:bg-muted text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-all font-bold cursor-pointer"
+                                >
+                                    <ChevronLeft className="w-4 h-4" />
+                                    Previous
+                                </button>
+                                <span className="font-extrabold text-foreground px-2">
+                                    Page {page} of {totalPages || 1}
+                                </span>
+                                <button
+                                    disabled={page >= totalPages}
+                                    onClick={() => {
+                                        const newPage = Math.min(totalPages, page + 1);
+                                        setPage(newPage);
+                                        updateUrlParams({ page: newPage });
+                                    }}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-border/80 bg-card hover:bg-muted text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-all font-bold cursor-pointer"
+                                >
+                                    Next
+                                    <ChevronRight className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Change Status Modal */}
+            <Dialog open={!!statusModalOrder} onOpenChange={(open) => !open && setStatusModalOrder(null)}>
+                {statusModalOrder && (() => {
+                    const modalPcbColorVal = getMetaValue(statusModalOrder, 'pcb_color', getMetaValue(statusModalOrder, 'solder_mask', 'Green'));
+                    const modalPcbColor = getPcbColorCode(modalPcbColorVal);
+                    const modalGerberFileName = (statusModalOrder as any)?.gerber_file?.original_name
+                        || (statusModalOrder as any)?.gerber_file?.file_name
+                        || (statusModalOrder as any)?.gerber_name
+                        || (statusModalOrder as any)?.gerber_file_name
+                        || (Array.isArray(statusModalOrder.metas) ? statusModalOrder.metas.find((m: any) => ['gerber_file_name', 'gerber_name'].includes(m.meta_key?.toLowerCase()))?.meta_value : null);
+
+                    return (
+                        <DialogContent
+                            className="max-w-4xl lg:max-w-5xl xl:max-w-6xl w-[96vw] border rounded-2xl p-5 md:p-6 shadow-2xl space-y-4 text-slate-900 max-h-[92vh] overflow-y-auto"
+                            style={{
+                                backgroundColor: getPcbLightBg(modalPcbColor),
+                                borderColor: `${modalPcbColor}60`
+                            }}
+                        >
+                            <div className="absolute top-0 left-0 right-0 h-1.5" style={{ backgroundColor: modalPcbColor }} />
+
+                            <DialogHeader className="pb-3 border-b border-slate-200/80">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2.5">
+                                        <div
+                                            className="p-2 rounded-xl border shadow-xs"
+                                            style={{ backgroundColor: `${modalPcbColor}20`, color: modalPcbColor, borderColor: `${modalPcbColor}40` }}
+                                        >
+                                            <RefreshCw className="w-5 h-5" />
+                                        </div>
+                                        <div>
+                                            <DialogTitle className="text-base font-black text-slate-900">
+                                                Update Order
+                                            </DialogTitle>
+                                            <DialogDescription className="text-xs text-slate-600 font-semibold mt-0.5">
+                                                Order #{statusModalOrder.order_number}
+                                            </DialogDescription>
+                                        </div>
+                                    </div>
+
+                                    {/* Badges in Top Header */}
+                                    <div className="flex items-center gap-2 mr-6 sm:mr-8">
+                                        {modalDeliveryDate && (
+                                            <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/90 border border-slate-300/80 text-slate-800 shadow-2xs">
+                                                <CalendarIcon className="w-3.5 h-3.5 text-blue-600" />
+                                                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Delivery:</span>
+                                                <span className="font-mono font-bold text-xs text-slate-900">{modalDeliveryDate}</span>
+                                            </div>
+                                        )}
+                                        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/90 border border-slate-300/80 text-slate-800 shadow-2xs">
+                                            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Order Qty:</span>
+                                            <span className="font-mono font-black text-sm text-emerald-700">{modalOrderQty} Pcs</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </DialogHeader>
+
+                            <form onSubmit={handleStatusUpdateSubmit} className="space-y-3.5">
+                                {/* Row 1: Core Identifiers & Delivery Date (4 Columns) */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5 flex items-center justify-between">
+                                            <span>Order Number</span>
+                                            <span className="text-rose-600 font-bold">*</span>
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            value={modalOrderNumber}
+                                            onChange={(e) => {
+                                                setModalOrderNumber(e.target.value);
+                                                if (modalOrderNumberError) setModalOrderNumberError("");
+                                            }}
+                                            placeholder="Order Number (e.g. M5000-1)..."
+                                            className={`w-full px-3.5 py-2.5 text-xs bg-white rounded-xl text-slate-900 font-bold shadow-xs h-auto ${modalOrderNumberError ? "border-rose-500 focus:ring-rose-500 ring-1 ring-rose-500" : "border-slate-300"}`}
+                                        />
+                                        {modalOrderNumberError && (
+                                            <p className="text-[11px] font-semibold text-rose-600 mt-1 flex items-center gap-1">
+                                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                                {modalOrderNumberError}
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5 flex items-center justify-between">
+                                            <span>P/N Number</span>
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            value={modalPnNumber}
+                                            onChange={(e) => setModalPnNumber(e.target.value)}
+                                            placeholder={modalGerberFileName || "P/N Number (e.g. ABC123)..."}
+                                            className="w-full px-3.5 py-2.5 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5 flex items-center justify-between">
+                                            <span className="flex items-center gap-1">
+                                                <CalendarIcon className="w-3 h-3 text-blue-600" />
+                                                <span>Delivery Date</span>
+                                            </span>
+                                            {modalDeliveryDate && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setModalDeliveryDate("")}
+                                                    className="text-[10px] text-slate-400 hover:text-rose-600 font-semibold cursor-pointer"
+                                                >
+                                                    Clear
+                                                </button>
+                                            )}
+                                        </label>
+                                        <Input
+                                            type="date"
+                                            value={modalDeliveryDate}
+                                            onChange={(e) => setModalDeliveryDate(e.target.value)}
+                                            className="w-full px-3.5 py-2.5 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5 flex items-center justify-between">
+                                            <span>Order Quantity (Pcs)</span>
+                                            <span className="text-rose-600 font-bold">*</span>
+                                        </label>
+                                        <Input
+                                            type="number"
+                                            min={1}
+                                            value={modalOrderQty}
+                                            onChange={(e) => setModalOrderQty(Math.max(0, parseInt(e.target.value) || 0))}
+                                            placeholder="Order Quantity (Pcs)..."
+                                            className="w-full px-3.5 py-2.5 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Row 2: Customer, Pipeline Status, Bill Number, Q.No & C/G (5 Columns) */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                                            Select Customer
+                                        </label>
+                                        <div className="relative">
+                                            <button
+                                                type="button"
+                                                onClick={() => setCustomerDropdownOpen(!customerDropdownOpen)}
+                                                className="w-full px-3.5 py-2.5 text-xs font-bold bg-white border border-slate-300 rounded-xl text-slate-900 shadow-xs flex items-center justify-between hover:border-slate-400 transition-colors h-10"
+                                            >
+                                                <span className="truncate">
+                                                    {modalCustomerName || "Select customer..."}
+                                                </span>
+                                                <ChevronDown className="w-4 h-4 text-slate-500 shrink-0 ml-1" />
+                                            </button>
+
+                                            {customerDropdownOpen && (
+                                                <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 p-2 space-y-2 max-w-full">
+                                                    <input
+                                                        type="text"
+                                                        value={customerSearch}
+                                                        onChange={(e) => {
+                                                            setCustomerSearch(e.target.value);
+                                                            fetchCustomersList(e.target.value);
+                                                        }}
+                                                        placeholder="🔍 Search customer name, email, phone..."
+                                                        className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+                                                        autoFocus
+                                                    />
+
+                                                    <div className="max-h-52 overflow-y-auto space-y-1 pr-0.5">
+                                                        {loadingCustomers ? (
+                                                            <div className="p-3 text-center text-xs text-slate-400 italic">
+                                                                Searching customers...
+                                                            </div>
+                                                        ) : customerList.length === 0 ? (
+                                                            <div className="p-3 text-center text-xs text-slate-400 italic">
+                                                                No matching customers found.
+                                                            </div>
+                                                        ) : (
+                                                            customerList.map((c) => {
+                                                                const displayName = c.company_name || c.name || `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Unnamed';
+                                                                const contact = c.email || c.mobile || c.phone_number || '';
+                                                                const isSelected = String(c.id) === String(modalUserId);
+                                                                return (
+                                                                    <button
+                                                                        key={c.id}
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setModalUserId(String(c.id));
+                                                                            setModalCustomerName(displayName);
+                                                                            setCustomerDropdownOpen(false);
+                                                                        }}
+                                                                        className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors flex items-center justify-between ${isSelected ? "bg-emerald-50 text-emerald-900 font-bold" : "hover:bg-slate-100 text-slate-800"
+                                                                            }`}
+                                                                    >
+                                                                        <div className="min-w-0 pr-2">
+                                                                            <p className="font-bold truncate">{displayName}</p>
+                                                                            {contact && <p className="text-[10px] text-slate-500 font-normal truncate">{contact}</p>}
+                                                                        </div>
+                                                                        {isSelected && <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
+                                                                    </button>
+                                                                );
+                                                            })
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                                            Select New Pipeline Status
+                                        </label>
+                                        <Select
+                                            value={modalNewStatus}
+                                            onValueChange={(val) => setModalNewStatus(val)}
+                                        >
+                                            <SelectTrigger className="w-full px-3.5 py-2.5 text-xs font-bold bg-white border-slate-300 rounded-xl text-slate-900 shadow-xs h-auto">
+                                                <SelectValue placeholder="Select status..." />
+                                            </SelectTrigger>
+                                            <SelectContent className="max-h-60 overflow-y-auto font-semibold">
+                                                {statuses.map((s) => (
+                                                    <SelectItem key={s.id} value={s.name}>
+                                                        {s.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5 flex items-center gap-1">
+                                            <span>Bill Number</span>
+                                            {['completed', 'delivered', 'order completed', 'production completed'].includes((modalNewStatus || '').toLowerCase().trim()) && (
+                                                <span className="text-rose-600 font-bold">*</span>
+                                            )}
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            value={modalBillNumber}
+                                            onChange={(e) => {
+                                                setModalBillNumber(e.target.value);
+                                                if (modalBillNumberError) setModalBillNumberError("");
+                                            }}
+                                            placeholder="Bill Number..."
+                                            className={`w-full px-3.5 py-2.5 text-xs bg-white rounded-xl text-slate-900 font-bold shadow-xs h-auto ${modalBillNumberError ? "border-rose-500 focus:ring-rose-500 ring-1 ring-rose-500" : "border-slate-300"}`}
+                                        />
+                                        {modalBillNumberError && (
+                                            <p className="text-[11px] font-semibold text-rose-600 mt-1">
+                                                {modalBillNumberError}
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                                            Q.No
+                                        </label>
+                                        <Input
+                                            type="text"
+                                            value={modalQNo}
+                                            onChange={(e) => setModalQNo(e.target.value)}
+                                            placeholder="Q.No..."
+                                            className="w-full px-3.5 py-2.5 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                                            C/G
+                                        </label>
+                                        <Select
+                                            value={modalCg || "none"}
+                                            onValueChange={(val) => setModalCg(val === "none" ? "" : val)}
+                                        >
+                                            <SelectTrigger className="w-full px-3.5 py-2.5 text-xs font-bold bg-white border-slate-300 rounded-xl text-slate-900 shadow-xs h-auto">
+                                                <SelectValue placeholder="Select C/G" />
+                                            </SelectTrigger>
+                                            <SelectContent className="font-semibold">
+                                                <SelectItem value="none">Select C/G</SelectItem>
+                                                <SelectItem value="CASH">CASH</SelectItem>
+                                                <SelectItem value="GST">GST</SelectItem>
+                                                <SelectItem value="BOTH">BOTH</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                {/* Row 3: Combo Orders & Old Orders (2 Columns) */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                                            Combo Orders
+                                        </label>
+                                        <ComboSelect
+                                            currentOrderId={statusModalOrder?.id}
+                                            currentOrderNumber={statusModalOrder?.order_number}
+                                            value={modalComboOrders}
+                                            onChange={setModalComboOrders}
+                                            placeholder="Select combo orders..."
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                                            Old Order Number
+                                        </label>
+                                        <OldOrderSelect
+                                            currentOrderId={statusModalOrder?.id}
+                                            currentOrderNumber={statusModalOrder?.order_number}
+                                            value={modalOldOrders}
+                                            onChange={setModalOldOrders}
+                                            placeholder="Select old order numbers..."
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Row 4: Production Quantities Bar (5 Columns in 1 Row) */}
+                                <div className="p-3 rounded-xl bg-white/75 border border-slate-200/90 shadow-2xs">
+                                    <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2 flex items-center justify-between">
+                                        <span>Production Quantities</span>
+                                        <span className="text-[10px] font-medium text-slate-400">Launch, panel, ups and completion metrics</span>
+                                    </div>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                                        <div>
+                                            <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                                                 Launch Qty
+                                            </label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                value={modalLaunchQty}
+                                                onChange={(e) => setModalLaunchQty(parseInt(e.target.value) || 0)}
+                                                placeholder="Launch..."
+                                                className="w-full px-3 py-2 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                                                Panel Qty
+                                            </label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                value={modalPanelQty}
+                                                onChange={(e) => {
+                                                    const p = parseInt(e.target.value) || 0;
+                                                    setModalPanelQty(p);
+                                                    if (p > 0 && modalUpsQty > 0) {
+                                                        setModalLaunchQty(p * modalUpsQty);
+                                                    }
+                                                }}
+                                                placeholder="Panel..."
+                                                className="w-full px-3 py-2 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                                                Ups Qty
+                                            </label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                value={modalUpsQty}
+                                                onChange={(e) => {
+                                                    const u = parseInt(e.target.value) || 0;
+                                                    setModalUpsQty(u);
+                                                    if (modalPanelQty > 0 && u > 0) {
+                                                        setModalLaunchQty(modalPanelQty * u);
+                                                    }
+                                                }}
+                                                placeholder="Ups..."
+                                                className="w-full px-3 py-2 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                                                Final Qty
+                                            </label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                value={modalFinalQty}
+                                                onChange={(e) => setModalFinalQty(parseInt(e.target.value) || 0)}
+                                                placeholder="Final..."
+                                                className="w-full px-3 py-2 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[11px] font-bold text-rose-700 block mb-1">
+                                                Failed (Pcs)
+                                            </label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                value={modalFailedQty}
+                                                onChange={(e) => setModalFailedQty(parseInt(e.target.value) || 0)}
+                                                placeholder="Failed..."
+                                                className="w-full px-3 py-2 text-xs bg-white border-rose-300 rounded-xl text-rose-600 font-bold shadow-xs h-auto"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Row 5: Audit Note / Remark (Compact) */}
+                                <div>
+                                    <label className="text-xs font-bold text-slate-700 block mb-1">
+                                        Add Audit Note / Remark (Optional)
+                                    </label>
+                                    <Textarea
+                                        rows={2}
+                                        value={modalRemark}
+                                        onChange={(e) => setModalRemark(e.target.value)}
+                                        placeholder="Enter reason or details for this status change..."
+                                        className="w-full px-3.5 py-2 text-xs bg-white border-slate-300 rounded-xl text-slate-900 placeholder:text-slate-400 resize-none font-medium shadow-xs"
+                                    />
+                                </div>
+
+                                {/* Row 6: Modal Actions */}
+                                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200/80">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() => setStatusModalOrder(null)}
+                                        className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition-all cursor-pointer border-slate-300/80 h-auto"
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        type="submit"
+                                        disabled={updatingStatus}
+                                        className="inline-flex items-center gap-1.5 px-5 py-2.5 text-white font-extrabold text-xs rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50 hover:opacity-90 active:scale-95 h-auto"
+                                        style={{ backgroundColor: modalPcbColor }}
+                                    >
+                                        <RefreshCw className={`w-3.5 h-3.5 ${updatingStatus ? 'animate-spin' : ''}`} />
+                                        {updatingStatus ? "Saving..." : "Update Status"}
+                                    </Button>
+                                </div>
+                            </form>
+                        </DialogContent>
+                    );
+                })()}
+            </Dialog>
+
+            {/* Soft Delete Confirmation Modal */}
+            <Dialog open={!!deleteModalOrder} onOpenChange={(open) => !open && setDeleteModalOrder(null)}>
+                {deleteModalOrder && (
+                    <DialogContent className="max-w-md border rounded-2xl p-6 shadow-2xl space-y-4 bg-card text-card-foreground border-rose-500/30">
+                        <DialogHeader className="pb-2 border-b border-border/60">
+                            <DialogTitle className="text-lg font-black text-rose-600 dark:text-rose-400 flex items-center gap-2">
+                                <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+                                Delete Order #{deleteModalOrder.order_number}?
+                            </DialogTitle>
+                            <DialogDescription className="text-xs text-muted-foreground mt-1 font-medium leading-relaxed">
+                                Are you sure you want to delete order <span className="font-bold text-foreground">#{deleteModalOrder.order_number}</span>?
+                                <br />
+                                This order will be moved to the deleted state/recycle bin and will not be permanently removed.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="flex items-center justify-end gap-2.5 pt-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setDeleteModalOrder(null)}
+                                disabled={deletingOrder}
+                                className="px-4 py-2 bg-muted hover:bg-muted/80 text-foreground font-bold text-xs rounded-xl border-border h-auto cursor-pointer"
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                type="button"
+                                onClick={handleDeleteOrder}
+                                disabled={deletingOrder}
+                                className="inline-flex items-center gap-1.5 px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer disabled:opacity-50 h-auto"
+                            >
+                                <Trash2 className={`w-3.5 h-3.5 ${deletingOrder ? 'animate-spin' : ''}`} />
+                                {deletingOrder ? "Deleting..." : "Delete Order"}
+                            </Button>
+                        </div>
+                    </DialogContent>
+                )}
+            </Dialog>
+
+            {/* Quick Preview Modal */}
+            <Dialog open={!!selectedOrder} onOpenChange={(open) => !open && setSelectedOrder(null)}>
+                {selectedOrder && (() => {
+                    const previewPcbColorVal = getMetaValue(selectedOrder, 'pcb_color', getMetaValue(selectedOrder, 'solder_mask', 'Green'));
+                    const previewPcbColor = getPcbColorCode(previewPcbColorVal);
+                    return (
+                        <DialogContent
+                            className="max-w-2xl max-h-[90vh] overflow-y-auto border rounded-2xl p-6 md:p-8 shadow-2xl space-y-5 text-slate-900 overflow-hidden"
+                            style={{
+                                backgroundColor: getPcbLightBg(previewPcbColor),
+                                borderColor: `${previewPcbColor}60`
+                            }}
+                        >
+                            <div className="absolute top-0 left-0 right-0 h-1.5" style={{ backgroundColor: previewPcbColor }} />
+                            <DialogHeader className="pb-4 border-b border-slate-200/80">
+                                <div>
+                                    <div className="flex items-center gap-3">
+                                        <DialogTitle className="text-xl font-black text-slate-900 font-mono">#{selectedOrder.order_number}</DialogTitle>
+                                        {(() => {
+                                            const selStatusStr = (selectedOrder?.status || 'Pending').toString().toLowerCase();
+                                            const selMatchedStatus = statuses.find(s => s && s.name && s.name.toString().toLowerCase() === selStatusStr);
+                                            const selStatusColor = selMatchedStatus?.color || "#10b981";
+                                            return (
+                                                <span
+                                                    className="px-3 py-0.5 rounded-full text-xs font-black uppercase tracking-wider border text-black shadow-2xs"
+                                                    style={{
+                                                        backgroundColor: selStatusColor,
+                                                        color: "#000000",
+                                                        borderColor: `${selStatusColor}80`
+                                                    }}
+                                                >
+                                                    {selectedOrder.status}
+                                                </span>
+                                            );
+                                        })()}
+                                    </div>
+                                    <DialogDescription className="text-xs text-slate-600 mt-1 font-medium">
+                                        Board: <span className="font-bold text-slate-900">{selectedOrder.board_name}</span>
+                                    </DialogDescription>
+                                </div>
+                            </DialogHeader>
+
+                            <div className="grid grid-cols-2 gap-3 bg-white/90 p-4 rounded-xl text-xs border border-slate-200 shadow-xs">
+                                <div><span className="text-slate-500 font-semibold">Amount:</span> <span className="font-black text-emerald-700">₹{Number(selectedOrder.order_value).toLocaleString('en-IN')}</span></div>
+                                <div><span className="text-slate-500 font-semibold">Email:</span> <span className="font-bold text-slate-900">{selectedOrder.user_email}</span></div>
+                                <div><span className="text-slate-500 font-semibold">Mobile:</span> <span className="font-bold text-slate-900">{selectedOrder.user_mobile}</span></div>
+                                <div><span className="text-slate-500 font-semibold">Delivery:</span> <span className={`font-bold ${isPastDeliveryDate(selectedOrder.delivery_date, selectedOrder.status) ? "text-red-600 font-extrabold" : "text-slate-900"}`}>{formatDate(selectedOrder.delivery_date)}</span></div>
+                            </div>
+
+                            <div className="pt-2 flex justify-end gap-3">
+                                {hasGenerateJobCardPermission && (
+                                    <Button
+                                        type="button"
+                                        onClick={() => {
+                                            const ord = selectedOrder;
+                                            setSelectedOrder(null);
+                                            openJobCardModal(ord);
+                                        }}
+                                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-all text-xs active:scale-95 cursor-pointer h-auto"
+                                    >
+                                        <FileText className="w-4 h-4" /> Generate Job Card
+                                    </Button>
+                                )}
+                                <Link
+                                    href={`/orders/${selectedOrder.order_number}`}
+                                    className="inline-flex items-center gap-2 px-5 py-2.5 text-white font-bold rounded-xl shadow-md hover:opacity-90 transition-all text-xs active:scale-95"
+                                    style={{ backgroundColor: previewPcbColor }}
+                                >
+                                    <ExternalLink className="w-4 h-4" /> Go to Full Order Detail Page
+                                </Link>
+                            </div>
+                        </DialogContent>
+                    );
+                })()}
+            </Dialog>
+
+            {/* View Order Activity Logs Modal */}
+            <Dialog open={!!logsModalOrder} onOpenChange={(open) => !open && setLogsModalOrder(null)}>
+                {logsModalOrder && (() => {
+                    const logsPcbColorVal = getMetaValue(logsModalOrder, 'pcb_color', getMetaValue(logsModalOrder, 'solder_mask', 'Green'));
+                    const logsPcbColor = getPcbColorCode(logsPcbColorVal);
+                    return (
+                        <DialogContent
+                            className="max-w-4xl max-h-[90vh] flex flex-col border rounded-2xl p-6 md:p-7 shadow-2xl text-slate-900 overflow-hidden"
+                            style={{
+                                backgroundColor: getPcbLightBg(logsPcbColor),
+                                borderColor: `${logsPcbColor}60`
+                            }}
+                        >
+                            <div className="absolute top-0 left-0 right-0 h-1.5" style={{ backgroundColor: logsPcbColor }} />
+                            <DialogHeader className="pb-3 border-b border-slate-200/80 flex-shrink-0">
+                                <div className="flex items-center gap-2.5">
+                                    <div
+                                        className="p-2 rounded-xl border shadow-xs"
+                                        style={{ backgroundColor: `${logsPcbColor}20`, color: logsPcbColor, borderColor: `${logsPcbColor}40` }}
+                                    >
+                                        <History className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
+                                            Order Activity Logs
+                                            <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-white text-slate-700 border border-slate-300">
+                                                #{logsModalOrder.order_number}
+                                            </span>
+                                            {logsData && logsData.length > 0 && (
+                                                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-200/80 text-slate-700">
+                                                    {logsData.length} records
+                                                </span>
+                                            )}
+                                        </DialogTitle>
+                                        <DialogDescription className="text-xs text-slate-600 font-semibold mt-0.5">
+                                            Audit trail & pipeline status history for {logsModalOrder.board_name}
+                                        </DialogDescription>
+                                    </div>
+                                </div>
+                            </DialogHeader>
+
+                            <div className="flex-1 min-h-0 border border-slate-200 rounded-xl bg-white shadow-xs overflow-hidden flex flex-col my-3">
+                                <div className="flex-1 overflow-y-auto overflow-x-auto max-h-[60vh]">
+                                    {loadingLogs ? (
+                                        <div className="p-6 space-y-4">
+                                            <div className="h-6 bg-slate-100 rounded-md animate-pulse w-full" />
+                                            <div className="h-6 bg-slate-100 rounded-md animate-pulse w-full" />
+                                            <div className="h-6 bg-slate-100 rounded-md animate-pulse w-full" />
+                                        </div>
+                                    ) : (
+                                        <table className="w-full text-left text-xs relative">
+                                            <thead className="sticky top-0 z-10 bg-slate-100 shadow-2xs border-b border-slate-200">
+                                                <tr className="text-slate-700 font-extrabold uppercase tracking-wider text-[10px]">
+                                                    <th className="py-3 px-4 bg-slate-100">Action</th>
+                                                    <th className="py-3 px-4 whitespace-nowrap bg-slate-100">User / Admin</th>
+                                                    <th className="py-3 px-4 whitespace-nowrap bg-slate-100">Timestamp</th>
+                                                    <th className="py-3 px-4 bg-slate-100">Details / Description</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100 font-sans">
+                                                {logsData.length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan={4} className="py-8 text-center text-slate-500 italic">
+                                                            No activity logs recorded for this order yet.
+                                                        </td>
+                                                    </tr>
+                                                ) : (
+                                                    logsData.map((log: any) => (
+                                                        <tr key={log.id} className="hover:bg-slate-50">
+                                                            <td className="py-3 px-4 whitespace-nowrap">
+                                                                <span className="font-extrabold text-emerald-700">
+                                                                    {log.action || "Order Action"}
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-3 px-4 font-bold text-slate-900 whitespace-nowrap">
+                                                                {log.admin_name || log.resolved_user_name || log.user_name || (log.admin_id ? `Admin #${log.admin_id}` : (log.user_id ? `User #${log.user_id}` : "System"))}
+                                                            </td>
+                                                            <td className="py-3 px-4 font-medium text-slate-700 whitespace-nowrap">
+                                                                {formatDate(log.created_at)}
+                                                            </td>
+                                                            <td className="py-3 px-4 font-medium text-slate-700">
+                                                                {log.description || "-"}
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="flex-shrink-0 flex justify-end pt-2 border-t border-slate-200/60">
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    onClick={() => setLogsModalOrder(null)}
+                                    className="px-4 py-2 font-bold text-xs rounded-xl transition-all cursor-pointer h-auto"
+                                >
+                                    Close
+                                </Button>
+                            </div>
+                        </DialogContent>
+                    );
+                })()}
+            </Dialog>
+
+            {/* View / Add / Delete Order Internal Notes Modal */}
+            <Dialog open={!!notesModalOrder} onOpenChange={(open) => !open && setNotesModalOrder(null)}>
+                {notesModalOrder && (() => {
+                    const notesPcbColorVal = getMetaValue(notesModalOrder, 'pcb_color', getMetaValue(notesModalOrder, 'solder_mask', 'Green'));
+                    const notesPcbColor = getPcbColorCode(notesPcbColorVal);
+                    return (
+                        <DialogContent
+                            className="max-w-2xl max-h-[90vh] overflow-y-auto border rounded-2xl p-6 md:p-7 shadow-2xl space-y-5 text-slate-900"
+                            style={{
+                                backgroundColor: getPcbLightBg(notesPcbColor),
+                                borderColor: `${notesPcbColor}60`
+                            }}
+                        >
+                            <div className="absolute top-0 left-0 right-0 h-1.5" style={{ backgroundColor: notesPcbColor }} />
+                            <DialogHeader className="pb-3 border-b border-slate-200/80">
+                                <div className="flex items-center gap-2.5">
+                                    <div
+                                        className="p-2 rounded-xl border shadow-xs"
+                                        style={{ backgroundColor: `${notesPcbColor}20`, color: notesPcbColor, borderColor: `${notesPcbColor}40` }}
+                                    >
+                                        <ClipboardList className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <DialogTitle className="text-base font-black text-slate-900 flex items-center gap-2">
+                                            Internal Notes
+                                            <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-white text-slate-700 border border-slate-300">
+                                                #{notesModalOrder.order_number}
+                                            </span>
+                                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 border border-amber-500/30">
+                                                {notesModalList.length} {notesModalList.length === 1 ? 'note' : 'notes'}
+                                            </span>
+                                        </DialogTitle>
+                                        <DialogDescription className="text-xs text-slate-600 font-semibold mt-0.5">
+                                            Internal production & staff notes for {notesModalOrder.board_name}
+                                        </DialogDescription>
+                                    </div>
+                                </div>
+                            </DialogHeader>
+
+                            {/* Add Note Form inside Modal */}
+                            <form onSubmit={handleAddModalNote} className="space-y-3 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+                                <label className="text-xs font-bold text-slate-700 block">
+                                    Add New Internal Note
+                                </label>
+                                <Textarea
+                                    value={modalNewNote}
+                                    onChange={(e) => setModalNewNote(e.target.value)}
+                                    placeholder="Write an internal note for this order (team only)..."
+                                    rows={2}
+                                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-900 font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500 resize-y min-h-[60px]"
+                                />
+                                <div className="flex justify-end">
+                                    <Button
+                                        type="submit"
+                                        disabled={submittingModalNote || !modalNewNote.trim()}
+                                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50 h-auto"
+                                    >
+                                        <Plus className={`w-3.5 h-3.5 ${submittingModalNote ? 'animate-spin' : ''}`} />
+                                        {submittingModalNote ? "Adding..." : "Add Note"}
+                                    </Button>
+                                </div>
+                            </form>
+
+                            {/* Notes List */}
+                            <div className="space-y-3">
+                                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                                    Existing Notes ({notesModalList.length})
+                                </h4>
+
+                                {loadingOrderNotes ? (
+                                    <div className="p-6 space-y-3 bg-white rounded-xl border border-slate-200">
+                                        <div className="h-5 bg-slate-100 rounded-md animate-pulse w-3/4" />
+                                        <div className="h-5 bg-slate-100 rounded-md animate-pulse w-1/2" />
+                                        <div className="h-5 bg-slate-100 rounded-md animate-pulse w-5/6" />
+                                    </div>
+                                ) : notesModalList.length === 0 ? (
+                                    <div className="p-6 rounded-xl border border-dashed border-slate-300 text-center bg-white/60">
+                                        <ClipboardList className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                                        <p className="text-xs font-semibold text-slate-600">No internal notes added yet.</p>
+                                        <p className="text-[11px] text-slate-500 mt-0.5">Use the box above to add notes for this order.</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2.5 max-h-[300px] overflow-y-auto pr-1">
+                                        {notesModalList.map((note) => (
+                                            <div
+                                                key={note.id}
+                                                className="p-3.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-1.5 shadow-2xs group"
+                                            >
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-5 h-5 rounded-full bg-amber-500/15 text-amber-700 font-extrabold text-[10px] flex items-center justify-center border border-amber-500/30">
+                                                            {(note.admin_name || note.admin_username || note.name || user?.name || "A").charAt(0).toUpperCase()}
+                                                        </div>
+                                                        <span className="font-bold text-xs text-slate-800">
+                                                            {note.admin_name || note.admin_username || note.name || (user?.name ? user.name : "Admin")}
+                                                        </span>
+                                                        <span className="text-[11px] text-slate-500 font-medium">
+                                                            {note.created_at ? new Date(note.created_at).toLocaleString('en-US', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                                                        </span>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setModalNoteToDelete(note)}
+                                                        title="Delete Note"
+                                                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
+                                                <p className="text-xs text-slate-700 font-medium whitespace-pre-wrap leading-relaxed pl-7">
+                                                    {note.note}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="flex justify-end pt-2">
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    onClick={() => setNotesModalOrder(null)}
+                                    className="px-4 py-2 font-bold text-xs rounded-xl transition-all cursor-pointer h-auto"
+                                >
+                                    Close
+                                </Button>
+                            </div>
+                        </DialogContent>
+                    );
+                })()}
+            </Dialog>
+
+            {/* Modal Delete Note Confirmation Dialog */}
+            <Dialog open={!!modalNoteToDelete} onOpenChange={(open) => !open && setModalNoteToDelete(null)}>
+                {modalNoteToDelete && (
+                    <DialogContent className="max-w-md border rounded-2xl p-6 shadow-2xl space-y-4 bg-white text-slate-900 border-rose-500/30">
+                        <DialogHeader className="pb-2 border-b border-slate-100">
+                            <DialogTitle className="text-base font-black text-rose-600 flex items-center gap-2">
+                                <AlertTriangle className="w-5 h-5 text-rose-600" />
+                                Delete Internal Note?
+                            </DialogTitle>
+                            <DialogDescription className="text-xs text-slate-600 mt-1 font-medium leading-relaxed">
+                                Are you sure you want to delete this internal note? This action cannot be undone.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-normal italic text-xs max-h-24 overflow-y-auto">
+                            "{modalNoteToDelete.note}"
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2.5 pt-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setModalNoteToDelete(null)}
+                                disabled={deletingModalNoteId !== null}
+                                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl border-slate-200 h-auto cursor-pointer"
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                type="button"
+                                onClick={() => confirmDeleteModalNote(modalNoteToDelete.id)}
+                                disabled={deletingModalNoteId !== null}
+                                className="inline-flex items-center gap-1.5 px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer disabled:opacity-50 h-auto"
+                            >
+                                <Trash2 className={`w-3.5 h-3.5 ${deletingModalNoteId !== null ? 'animate-spin' : ''}`} />
+                                {deletingModalNoteId !== null ? "Deleting..." : "Delete Note"}
+                            </Button>
+                        </div>
+                    </DialogContent>
+                )}
+            </Dialog>
+
+            {/* Add / Edit Film Date & Time Modal */}
+            <Dialog open={!!filmModalOrder} onOpenChange={(open) => !open && setFilmModalOrder(null)}>
+                {filmModalOrder && (() => {
+                    const modalPcbColorVal = getMetaValue(filmModalOrder, 'pcb_color', getMetaValue(filmModalOrder, 'solder_mask', 'Green'));
+                    const modalPcbColor = getPcbColorCode(modalPcbColorVal);
+                    const existingFilmVal = getMetaValue(filmModalOrder, 'film_datetime', getMetaValue(filmModalOrder, 'film_date', ''));
+                    const isExisting = existingFilmVal && existingFilmVal !== 'N/A';
+
+                    return (
+                        <DialogContent
+                            className="max-w-md border rounded-2xl p-6 md:p-7 shadow-2xl space-y-5 text-slate-900 overflow-hidden"
+                            style={{
+                                backgroundColor: getPcbLightBg(modalPcbColor),
+                                borderColor: `${modalPcbColor}60`
+                            }}
+                        >
+                            <div className="absolute top-0 left-0 right-0 h-1.5" style={{ backgroundColor: modalPcbColor }} />
+
+                            <DialogHeader className="pb-3 border-b border-slate-200/80">
+                                <div className="flex items-center gap-2.5">
+                                    <div
+                                        className="p-2 rounded-xl border shadow-xs"
+                                        style={{ backgroundColor: `${modalPcbColor}20`, color: modalPcbColor, borderColor: `${modalPcbColor}40` }}
+                                    >
+                                        <Film className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <DialogTitle className="text-base font-black text-slate-900">
+                                            {isExisting ? "Update Film Date & Time" : "Add Film Date & Time"}
+                                        </DialogTitle>
+                                        <DialogDescription className="text-xs text-slate-600 font-semibold mt-0.5">
+                                            Order #{filmModalOrder.order_number} · {filmModalOrder.board_name}
+                                        </DialogDescription>
+                                    </div>
+                                </div>
+                            </DialogHeader>
+
+                            <form onSubmit={handleSaveFilm} className="space-y-4">
+                                {isExisting && (
+                                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl text-xs space-y-0.5">
+                                        <span className="font-bold text-purple-900 block">Current Saved Film Date & Time:</span>
+                                        <span className="font-mono text-purple-700 font-extrabold">{existingFilmVal}</span>
+                                    </div>
+                                )}
+
+                                {/* Film Applied Toggle Option */}
+                                <div className="flex items-center justify-between p-3.5 bg-white border border-slate-200/90 rounded-xl shadow-xs">
+                                    <div className="space-y-0.5">
+                                        <label htmlFor="film-applied-switch" className="text-xs font-black text-slate-900 block cursor-pointer">
+                                            Film Applied
+                                        </label>
+                                        <span className="text-[11px] text-slate-600 block font-semibold">
+                                            {filmApplied ? "Mark film as applied (Status: Yes)" : "Mark film as not applied (Status: No)"}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center gap-2.5">
+                                        <span className={`text-[11px] font-black uppercase px-2.5 py-0.5 rounded-md ${filmApplied ? "bg-emerald-50 text-emerald-700 border border-emerald-300" : "bg-rose-50 text-rose-700 border border-rose-300"}`}>
+                                            {filmApplied ? "Yes" : "No"}
+                                        </span>
+                                        <button
+                                            id="film-applied-switch"
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={filmApplied}
+                                            onClick={() => setFilmApplied(!filmApplied)}
+                                            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${filmApplied ? 'bg-purple-600' : 'bg-slate-300'}`}
+                                        >
+                                            <span
+                                                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${filmApplied ? 'translate-x-5' : 'translate-x-0'}`}
+                                            />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="text-xs font-bold text-slate-700 block mb-1.5">
+                                        Select Film Date & Time
+                                    </label>
+                                    <Input
+                                        type="datetime-local"
+                                        value={filmDateTime}
+                                        onChange={(e) => setFilmDateTime(e.target.value)}
+                                        className="w-full px-3.5 py-2.5 text-xs bg-white border-slate-300 rounded-xl text-slate-900 font-bold shadow-xs h-auto cursor-pointer"
+                                        required
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200/80">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() => setFilmModalOrder(null)}
+                                        className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition-all cursor-pointer border-slate-300/80 h-auto"
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        type="submit"
+                                        disabled={savingFilm}
+                                        className="inline-flex items-center gap-1.5 px-5 py-2.5 text-white font-extrabold text-xs rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50 hover:opacity-90 active:scale-95 h-auto"
+                                        style={{ backgroundColor: modalPcbColor }}
+                                    >
+                                        <Film className={`w-3.5 h-3.5 ${savingFilm ? 'animate-spin' : ''}`} />
+                                        {savingFilm ? "Saving..." : isExisting ? "Update Film" : "Save Film"}
+                                    </Button>
+                                </div>
+                            </form>
+                        </DialogContent>
+                    );
+                })()}
+            </Dialog>
+
+            {/* Dynamic Editable Job Card Generator & Preview Modal */}
+            <Dialog open={!!jobCardModalOrder} onOpenChange={(open) => !open && setJobCardModalOrder(null)}>
+                {jobCardModalOrder && (() => {
+                    const order = jobCardModalOrder;
+                    const isSingleSide = jobCardData?.is_single_side ?? false;
+                    const layersStr = getMetaValue(order, 'layers', getMetaValue(order, 'layer', '2'));
+
+                    return (
+                        <DialogContent className="max-w-5xl max-h-[94vh] overflow-y-auto border border-slate-300 rounded-2xl p-4 md:p-6 shadow-2xl space-y-4 text-slate-900 bg-slate-50 dark:bg-slate-900 dark:text-slate-100">
+                            <DialogHeader className="pb-3 border-b border-slate-200 dark:border-slate-800 flex flex-row items-center justify-between">
+                                <div>
+                                    <DialogTitle className="text-lg font-extrabold flex items-center gap-2 text-indigo-900 dark:text-indigo-300">
+                                        <FileText className="w-5 h-5 text-indigo-600" />
+                                        Job Card Preview & Editor
+                                    </DialogTitle>
+                                    <DialogDescription className="text-xs text-slate-500 font-semibold mt-0.5">
+                                        Order #{order.order_number} · {order.board_name || 'PCB Order'} ({isSingleSide ? '1-SIDE' : `${layersStr}-Layer`}) · Direct Editable Layout
+                                    </DialogDescription>
+                                </div>
+
+                                <div className="flex items-center gap-2.5 mr-6 flex-wrap">
+                                    <Button
+                                        type="button"
+                                        onClick={() => setJobCardModalOrder(null)}
+                                        variant="outline"
+                                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer h-auto"
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        onClick={handleSaveJobCard}
+                                        disabled={savingJobCard || loadingJobCard}
+                                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer h-auto disabled:opacity-50"
+                                    >
+                                        <Check className={`w-4 h-4 ${savingJobCard ? 'animate-spin' : ''}`} />
+                                        {savingJobCard ? "Saving..." : "Save Changes"}
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        onClick={handleDownloadPdf}
+                                        disabled={downloadingPdf || loadingJobCard}
+                                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer h-auto disabled:opacity-50"
+                                        title="Download Job Card PDF only"
+                                    >
+                                        <Download className={`w-4 h-4 ${downloadingPdf ? 'animate-spin' : ''}`} />
+                                        {downloadingPdf ? "Generating..." : "Download Job Card"}
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        onClick={handleDownloadCombinedPdf}
+                                        disabled={downloadingCombinedPdf || loadingJobCard}
+                                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer h-auto disabled:opacity-50"
+                                        title="Download Combined PDF with all attachments"
+                                    >
+                                        <Download className={`w-4 h-4 ${downloadingCombinedPdf ? 'animate-spin' : ''}`} />
+                                        {downloadingCombinedPdf ? "Generating Combined..." : "Download Combined PDF"}
+                                    </Button>
+                                </div>
+
+                            </DialogHeader>
+
+                            {loadingJobCard || !jobCardData ? (
+                                <div className="p-12 text-center text-slate-500 font-medium">
+                                    <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-indigo-600" />
+                                    Loading Job Card details...
+                                </div>
+                            ) : (
+                                <>
+                                    {/* Master Table Container */}
+                                    <div className="p-3 bg-white border border-slate-300 rounded-lg shadow-md font-sans text-black overflow-x-auto">
+
+                                        <table className="w-full border-collapse border-2 border-black text-xs font-semibold text-black" style={{ borderCollapse: 'collapse', border: '2px solid #000' }}>
+                                            <tbody>
+                                                {/* Header Row */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td className="p-2 border-r-2 border-black w-1/2 font-black text-sm align-middle" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span>JOB NO:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.job_number ?? ''}
+                                                                onChange={e => updateJobCardField('job_number', e.target.value)}
+                                                                className="font-extrabold text-base underline bg-amber-50/60 hover:bg-amber-100/80 border border-slate-300 rounded px-1.5 py-0.5 w-full focus:bg-white focus:outline-none"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-2 w-1/2 text-right font-black text-base align-middle" style={{ borderBottom: '2px solid #000' }}>
+                                                        <input
+                                                            type="text"
+                                                            value={jobCardData.job_type ?? ''}
+                                                            onChange={e => updateJobCardField('job_type', e.target.value)}
+                                                            className="font-black text-base text-right bg-amber-50/60 hover:bg-amber-100/80 border border-slate-300 rounded px-1.5 py-0.5 w-full focus:bg-white focus:outline-none"
+                                                        />
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 2: Dates */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">Order Date:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.order_date ?? ''}
+                                                                onChange={e => updateJobCardField('order_date', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">Launch Date:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.launch_date ?? ''}
+                                                                onChange={e => updateJobCardField('launch_date', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1.5" style={{ borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">Shipping Date:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.shipping_date ?? ''}
+                                                                onChange={e => updateJobCardField('shipping_date', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 3: Quantities & Min Hole */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">ORDER QTY:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.order_qty ?? ''}
+                                                                onChange={e => updateJobCardField('order_qty', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">LAUNCHED:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.launched_qty ?? ''}
+                                                                onChange={e => updateJobCardField('launched_qty', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-0" style={{ borderBottom: '2px solid #000' }}>
+                                                        <table className="w-full border-collapse" style={{ borderCollapse: 'collapse' }}>
+                                                            <tbody>
+                                                                <tr>
+                                                                    <td className="p-1.5 border-r-2 border-black w-1/3" style={{ borderRight: '2px solid #000' }}>
+                                                                        <div className="flex items-center gap-1">
+                                                                            <span>UPS:</span>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={jobCardData.ups ?? ''}
+                                                                                onChange={e => updateJobCardField('ups', e.target.value)}
+                                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="p-1.5 border-r-2 border-black w-1/3" style={{ borderRight: '2px solid #000' }}>
+                                                                        <div className="flex items-center gap-1">
+                                                                            <span>PANELS:</span>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={jobCardData.panels ?? ''}
+                                                                                onChange={e => updateJobCardField('panels', e.target.value)}
+                                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="p-1.5 w-1/3">
+                                                                        <div className="flex items-center gap-1">
+                                                                            <span className="whitespace-nowrap">Min.Hole:</span>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={jobCardData.min_hole ?? ''}
+                                                                                onChange={e => updateJobCardField('min_hole', e.target.value)}
+                                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 4: Panel & Cutting Size */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td colSpan={2} className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">PANEL SIZE:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.panel_size ?? ''}
+                                                                onChange={e => updateJobCardField('panel_size', e.target.value)}
+                                                                placeholder="42.23 x 118.27"
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1.5 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1.5" style={{ borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">CUTTING SIZE:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.cutting_size ?? ''}
+                                                                onChange={e => updateJobCardField('cutting_size', e.target.value)}
+                                                                placeholder="e.g. 100x200"
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1.5 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 5: Material, Thickness, Copper, Finish */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span>Material:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.material ?? ''}
+                                                                onChange={e => updateJobCardField('material', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span>Thick:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.thickness ?? ''}
+                                                                onChange={e => updateJobCardField('thickness', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-0" style={{ borderBottom: '2px solid #000' }}>
+                                                        <table className="w-full border-collapse" style={{ borderCollapse: 'collapse' }}>
+                                                            <tbody>
+                                                                <tr>
+                                                                    <td className="p-1.5 border-r-2 border-black w-1/2" style={{ borderRight: '2px solid #000' }}>
+                                                                        <div className="flex items-center gap-1">
+                                                                            <span className="whitespace-nowrap">Copper Thick:</span>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={jobCardData.copper_thickness ?? ''}
+                                                                                onChange={e => updateJobCardField('copper_thickness', e.target.value)}
+                                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="p-1.5 w-1/2">
+                                                                        <div className="flex items-center gap-1">
+                                                                            <span>Finish:</span>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={jobCardData.finish ?? ''}
+                                                                                onChange={e => updateJobCardField('finish', e.target.value)}
+                                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 6: Mask Colour, LP Color, LP Side */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">Mask Colour:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.mask_colour ?? ''}
+                                                                onChange={e => updateJobCardField('mask_colour', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">LP Color:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.lp_color ?? ''}
+                                                                onChange={e => updateJobCardField('lp_color', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1.5" style={{ borderBottom: '2px solid #000' }}>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="whitespace-nowrap">LP Side:</span>
+                                                            <input
+                                                                type="text"
+                                                                value={jobCardData.lp_side ?? ''}
+                                                                onChange={e => updateJobCardField('lp_side', e.target.value)}
+                                                                className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 7: Routing / V-Cut / Tech Specs */}
+                                                <tr className="border-b-2 border-black">
+                                                    {isSingleSide ? (
+                                                        <>
+                                                            <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span>Route:</span>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={jobCardData.route ?? ''}
+                                                                        onChange={e => updateJobCardField('route', e.target.value)}
+                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                    />
+                                                                </div>
+                                                            </td>
+                                                            <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span>V-Cut:</span>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={jobCardData.v_cut ?? ''}
+                                                                        onChange={e => updateJobCardField('v_cut', e.target.value)}
+                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                    />
+                                                                </div>
+                                                            </td>
+                                                            <td className="p-0" style={{ borderBottom: '2px solid #000' }}>
+                                                                <table className="w-full border-collapse" style={{ borderCollapse: 'collapse' }}>
+                                                                    <tbody>
+                                                                        <tr>
+                                                                            <td className="p-1.5 border-r-2 border-black w-1/2" style={{ borderRight: '2px solid #000' }}>
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <span className="whitespace-nowrap">Shearing Cut:</span>
+                                                                                    <input
+                                                                                        type="text"
+                                                                                        value={jobCardData.shearing_cut ?? ''}
+                                                                                        onChange={e => updateJobCardField('shearing_cut', e.target.value)}
+                                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                                    />
+                                                                                </div>
+                                                                            </td>
+                                                                            <td className="p-1.5 w-1/2">
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <span className="whitespace-nowrap">Internal Cutouts Reqd.?:</span>
+                                                                                    <input
+                                                                                        type="text"
+                                                                                        value={jobCardData.internal_cutouts ?? ''}
+                                                                                        onChange={e => updateJobCardField('internal_cutouts', e.target.value)}
+                                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                                    />
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    </tbody>
+                                                                </table>
+                                                            </td>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span>Route:</span>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={jobCardData.route ?? ''}
+                                                                        onChange={e => updateJobCardField('route', e.target.value)}
+                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                    />
+                                                                </div>
+                                                            </td>
+                                                            <td className="p-1.5 border-r-2 border-black" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span>V-Cut:</span>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={jobCardData.v_cut ?? ''}
+                                                                        onChange={e => updateJobCardField('v_cut', e.target.value)}
+                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                    />
+                                                                </div>
+                                                            </td>
+                                                            <td className="p-0" style={{ borderBottom: '2px solid #000' }}>
+                                                                <table className="w-full border-collapse" style={{ borderCollapse: 'collapse' }}>
+                                                                    <tbody>
+                                                                        <tr style={{ borderBottom: '2px solid #000' }}>
+                                                                            <td className="p-1.5 border-r-2 border-black w-1/2" style={{ borderRight: '2px solid #000' }}>
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <span className="whitespace-nowrap">FPT Program:</span>
+                                                                                    <input
+                                                                                        type="text"
+                                                                                        value={jobCardData.fpt_program ?? ''}
+                                                                                        onChange={e => updateJobCardField('fpt_program', e.target.value)}
+                                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                                    />
+                                                                                </div>
+                                                                            </td>
+                                                                            <td className="p-1.5 w-1/2">
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <span className="whitespace-nowrap">2<sup>nd</sup> stage reqd.?:</span>
+                                                                                    <input
+                                                                                        type="text"
+                                                                                        value={jobCardData.second_stage ?? ''}
+                                                                                        onChange={e => updateJobCardField('second_stage', e.target.value)}
+                                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                                    />
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                        <tr>
+                                                                            <td className="p-1.5 border-r-2 border-black w-1/2" style={{ borderRight: '2px solid #000' }}>
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <span className="whitespace-nowrap">Copper Area:</span>
+                                                                                    <input
+                                                                                        type="text"
+                                                                                        value={jobCardData.copper_area ?? ''}
+                                                                                        onChange={e => updateJobCardField('copper_area', e.target.value)}
+                                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                                    />
+                                                                                </div>
+                                                                            </td>
+                                                                            <td className="p-1.5 w-1/2">
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <span className="whitespace-nowrap">Internal Cutouts Reqd.?:</span>
+                                                                                    <input
+                                                                                        type="text"
+                                                                                        value={jobCardData.internal_cutouts ?? ''}
+                                                                                        onChange={e => updateJobCardField('internal_cutouts', e.target.value)}
+                                                                                        className="font-bold bg-amber-50/60 border border-slate-300 rounded px-1 py-0.5 w-full focus:bg-white"
+                                                                                    />
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    </tbody>
+                                                                </table>
+                                                            </td>
+                                                        </>
+                                                    )}
+                                                </tr>
+
+                                                {/* Row 8: Notes Section */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td colSpan={2} className="p-2 border-r-2 border-black align-top" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>
+                                                        <div className="font-black text-xs underline mb-1">Production Note:</div>
+                                                        <textarea
+                                                            value={jobCardData.production_note ?? ''}
+                                                            onChange={e => updateJobCardField('production_note', e.target.value)}
+                                                            rows={2}
+                                                            placeholder="• Note 1&#10;• Note 2"
+                                                            className="w-full text-xs font-semibold p-1.5 bg-amber-50/60 hover:bg-amber-100/80 border border-slate-300 rounded focus:bg-white focus:outline-none"
+                                                        />
+                                                    </td>
+                                                    <td className="p-2 align-top" style={{ borderBottom: '2px solid #000' }}>
+                                                        <div className="font-black text-xs underline mb-1">Customer Special Note:</div>
+                                                        <textarea
+                                                            value={jobCardData.customer_note ?? ''}
+                                                            onChange={e => updateJobCardField('customer_note', e.target.value)}
+                                                            rows={2}
+                                                            placeholder="Special notes..."
+                                                            className="w-full text-xs font-semibold p-1.5 bg-amber-50/60 hover:bg-amber-100/80 border border-slate-300 rounded focus:bg-white focus:outline-none"
+                                                        />
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 9: Final Quantities Header & Input Row */}
+                                                <tr className="border-b-2 border-black">
+                                                    <td colSpan={3} className="p-0" style={{ borderBottom: '2px solid #000' }}>
+                                                        <table className="w-full border-collapse text-center" style={{ borderCollapse: 'collapse' }}>
+                                                            <thead>
+                                                                <tr className="border-b-2 border-black font-bold">
+                                                                    <th className="p-1.5 border-r-2 border-black w-1/4 font-bold text-xs" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>Final Panel Qty.</th>
+                                                                    <th className="p-1.5 border-r-2 border-black w-1/4 font-bold text-xs" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>Final Board Qty.</th>
+                                                                    <th className="p-1.5 border-r-2 border-black w-1/4 font-bold text-xs" style={{ borderRight: '2px solid #000', borderBottom: '2px solid #000' }}>Rejected Board Qty.</th>
+                                                                    <th className="p-1.5 w-1/4 font-bold text-xs" style={{ borderBottom: '2px solid #000' }}>Why Rejected?</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                <tr>
+                                                                    <td className="p-1 border-r-2 border-black" style={{ borderRight: '2px solid #000' }}>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={jobCardData.final_panel_qty ?? ''}
+                                                                            onChange={e => updateJobCardField('final_panel_qty', e.target.value)}
+                                                                            placeholder="e.g. 10"
+                                                                            className="w-full text-center text-xs font-bold bg-amber-50/60 border border-slate-300 rounded py-0.5 focus:bg-white"
+                                                                        />
+                                                                    </td>
+                                                                    <td className="p-1 border-r-2 border-black" style={{ borderRight: '2px solid #000' }}>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={jobCardData.final_board_qty ?? ''}
+                                                                            onChange={e => updateJobCardField('final_board_qty', e.target.value)}
+                                                                            placeholder="e.g. 120"
+                                                                            className="w-full text-center text-xs font-bold bg-amber-50/60 border border-slate-300 rounded py-0.5 focus:bg-white"
+                                                                        />
+                                                                    </td>
+                                                                    <td className="p-1 border-r-2 border-black" style={{ borderRight: '2px solid #000' }}>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={jobCardData.rejected_board_qty ?? ''}
+                                                                            onChange={e => updateJobCardField('rejected_board_qty', e.target.value)}
+                                                                            placeholder="e.g. 2"
+                                                                            className="w-full text-center text-xs font-bold bg-amber-50/60 border border-slate-300 rounded py-0.5 focus:bg-white"
+                                                                        />
+                                                                    </td>
+                                                                    <td className="p-1">
+                                                                        <input
+                                                                            type="text"
+                                                                            value={jobCardData.why_rejected ?? ''}
+                                                                            onChange={e => updateJobCardField('why_rejected', e.target.value)}
+                                                                            placeholder="e.g. Surface defect"
+                                                                            className="w-full text-center text-xs font-bold bg-amber-50/60 border border-slate-300 rounded py-0.5 focus:bg-white"
+                                                                        />
+                                                                    </td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+
+                                                {/* Row 10: Manufacturing Process Table Header & Editable Rows */}
+                                                <tr>
+                                                    <td colSpan={3} className="p-0">
+                                                        <table className="w-full border-collapse text-xs" style={{ borderCollapse: 'collapse' }}>
+                                                            <thead>
+                                                                <tr className="border-b-2 border-black font-black uppercase text-[10px] text-center" style={{ borderBottom: '2px solid #000' }}>
+                                                                    <th className="p-1.5 border-r-2 border-black text-left font-black w-1/4 pl-3" style={{ borderRight: '2px solid #000' }}>PROCESS</th>
+                                                                    <th className="p-1.5 border-r-2 border-black text-center font-black w-12" style={{ borderRight: '2px solid #000' }}>IN</th>
+                                                                    <th className="p-1.5 border-r-2 border-black text-center font-black" style={{ borderRight: '2px solid #000' }}>PANEL QTY</th>
+                                                                    <th className="p-1.5 border-r-2 border-black text-center font-black w-12" style={{ borderRight: '2px solid #000' }}>OUT</th>
+                                                                    <th className="p-1.5 border-r-1.5 border-black text-center font-black" style={{ borderRight: '2px solid #000' }}>PANEL QTY</th>
+                                                                    <th className="p-1.5 border-r-2 border-black text-center font-black w-14" style={{ borderRight: '2px solid #000' }}>Q.C</th>
+                                                                    <th className="p-1.5 border-r-2 border-black text-center font-black w-20" style={{ borderRight: '2px solid #000' }}>SIGN</th>
+                                                                    <th className="p-1.5 text-center font-black">REMARK</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {(jobCardData.processes || []).map((proc: any, idx: number) => (
+                                                                    <tr key={idx} className="border-b border-black text-[10px]" style={{ borderBottom: idx === (jobCardData.processes?.length || 0) - 1 ? 'none' : '1px solid #000' }}>
+                                                                        <td className="p-1 border-r-2 border-black font-black text-left pl-3 uppercase" style={{ borderRight: '2px solid #000' }}>
+                                                                            {proc.process}
+                                                                        </td>
+                                                                        <td className="p-0.5 border-r-2 border-black text-center" style={{ borderRight: '2px solid #000' }}>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={proc.in ?? ''}
+                                                                                onChange={e => updateJobCardProcess(idx, 'in', e.target.value)}
+                                                                                className="w-full text-center text-xs font-semibold bg-transparent hover:bg-amber-50 focus:bg-white border-0 py-0.5 focus:outline-none"
+                                                                            />
+                                                                        </td>
+                                                                        <td className="p-0.5 border-r-2 border-black text-center" style={{ borderRight: '2px solid #000' }}>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={proc.panel_qty_in ?? ''}
+                                                                                onChange={e => updateJobCardProcess(idx, 'panel_qty_in', e.target.value)}
+                                                                                className="w-full text-center text-xs font-semibold bg-transparent hover:bg-amber-50 focus:bg-white border-0 py-0.5 focus:outline-none"
+                                                                            />
+                                                                        </td>
+                                                                        <td className="p-0.5 border-r-2 border-black text-center" style={{ borderRight: '2px solid #000' }}>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={proc.out ?? ''}
+                                                                                onChange={e => updateJobCardProcess(idx, 'out', e.target.value)}
+                                                                                className="w-full text-center text-xs font-semibold bg-transparent hover:bg-amber-50 focus:bg-white border-0 py-0.5 focus:outline-none"
+                                                                            />
+                                                                        </td>
+                                                                        <td className="p-0.5 border-r-2 border-black text-center" style={{ borderRight: '2px solid #000' }}>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={proc.panel_qty_out ?? ''}
+                                                                                onChange={e => updateJobCardProcess(idx, 'panel_qty_out', e.target.value)}
+                                                                                className="w-full text-center text-xs font-semibold bg-transparent hover:bg-amber-50 focus:bg-white border-0 py-0.5 focus:outline-none"
+                                                                            />
+                                                                        </td>
+                                                                        <td className="p-0.5 border-r-2 border-black text-center" style={{ borderRight: '2px solid #000' }}>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={proc.qc ?? ''}
+                                                                                onChange={e => updateJobCardProcess(idx, 'qc', e.target.value)}
+                                                                                className="w-full text-center text-xs font-semibold bg-transparent hover:bg-amber-50 focus:bg-white border-0 py-0.5 focus:outline-none"
+                                                                            />
+                                                                        </td>
+                                                                        <td className="p-0.5 border-r-2 border-black text-center" style={{ borderRight: '2px solid #000' }}>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={proc.sign ?? ''}
+                                                                                onChange={e => updateJobCardProcess(idx, 'sign', e.target.value)}
+                                                                                className="w-full text-center text-xs font-semibold bg-transparent hover:bg-amber-50 focus:bg-white border-0 py-0.5 focus:outline-none"
+                                                                            />
+                                                                        </td>
+                                                                        <td className="p-0.5 text-center">
+                                                                            <input
+                                                                                type="text"
+                                                                                value={proc.remark ?? ''}
+                                                                                onChange={e => updateJobCardProcess(idx, 'remark', e.target.value)}
+                                                                                className="w-full text-center text-xs font-semibold bg-transparent hover:bg-amber-50 focus:bg-white border-0 py-0.5 focus:outline-none"
+                                                                            />
+                                                                        </td>
+                                                                    </tr>
+                                                                ))}
+                                                            </tbody>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    {/* Additional Documents & Combined PDF Export Section */}
+                                    <div className="mt-6 pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
+                                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                                            <div>
+                                                <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 flex items-center gap-2 uppercase tracking-wide">
+                                                    <Paperclip className="w-4 h-4 text-indigo-600" />
+                                                    Additional Documents
+                                                </h3>
+                                                <p className="text-[11px] text-slate-500 font-medium">
+                                                    Attach PDFs, DOC, or DOCX documents to combine with this Job Card into a single PDF export.
+                                                </p>
+                                            </div>
+
+                                            <div className="flex items-center gap-2">
+                                                <input
+                                                    type="file"
+                                                    id="job-card-doc-upload"
+                                                    accept=".pdf,.doc,.docx"
+                                                    className="hidden"
+                                                    disabled={uploadingDoc}
+                                                    onChange={(e) => {
+                                                        const selected = e.target.files?.[0];
+                                                        if (selected) {
+                                                            handleUploadJobCardDoc(selected);
+                                                            e.target.value = "";
+                                                        }
+                                                    }}
+                                                />
+                                                <label htmlFor="job-card-doc-upload">
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        asChild
+                                                        disabled={uploadingDoc}
+                                                        className="bg-white hover:bg-slate-100 text-indigo-700 border-indigo-200 rounded-xl text-xs font-bold gap-1.5 h-9 px-3 cursor-pointer shadow-xs"
+                                                    >
+                                                        <span>
+                                                            <Plus className="w-3.5 h-3.5" />
+                                                            {uploadingDoc ? "Uploading..." : "Add PDF / DOC / DOCX"}
+                                                        </span>
+                                                    </Button>
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        {/* Document Sequence List Card */}
+                                        <div className="bg-card border border-border/80 rounded-xl p-3 shadow-xs space-y-2">
+                                            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider px-1">
+                                                Sequence & Attachments List
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                {/* 1. Primary Generated Job Card Item */}
+                                                <div className="flex items-center justify-between p-3 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-lg text-xs">
+                                                    <div className="flex items-center gap-3">
+                                                        <span className="font-bold text-slate-400 cursor-default">☰</span>
+                                                        <span className="font-black text-amber-900 dark:text-amber-300 w-6">1.</span>
+                                                        <div>
+                                                            <div className="font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                                                                <span>Job Card {jobCardData.job_number || order.order_number}.pdf</span>
+                                                                <span className="bg-amber-200/80 text-amber-900 text-[10px] font-black px-2 py-0.5 rounded-full">
+                                                                    Generated Job Card
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-[10px] text-slate-500 font-semibold mt-0.5">
+                                                                Primary document · Auto-generated from latest Job Card editor data
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex items-center gap-2 text-xs">
+                                                        <span className="text-[11px] font-bold text-amber-800 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-900/40 px-2 py-1 rounded-md">
+                                                            Primary
+                                                        </span>
+                                                    </div>
+                                                </div>
+
+                                                {/* 2. Attached User Documents */}
+                                                {(jobCardData.documents || []).length === 0 ? (
+                                                    <div className="text-center py-4 border border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-400 font-medium">
+                                                        No additional PDF or Word documents attached yet. Click "Add PDF / DOC / DOCX" above.
+                                                    </div>
+                                                ) : (
+                                                    (jobCardData.documents || []).map((doc: any, index: number) => {
+                                                        const isDocx = doc.file_type === 'doc' || doc.file_type === 'docx';
+                                                        return (
+                                                            <div
+                                                                key={doc.id}
+                                                                draggable
+                                                                onDragStart={() => setDraggedDocIndex(index)}
+                                                                onDragOver={(e) => e.preventDefault()}
+                                                                onDrop={() => {
+                                                                    if (draggedDocIndex === null || draggedDocIndex === index) return;
+                                                                    const docs = [...jobCardData.documents];
+                                                                    const draggedItem = docs[draggedDocIndex];
+                                                                    docs.splice(draggedDocIndex, 1);
+                                                                    docs.splice(index, 0, draggedItem);
+                                                                    setDraggedDocIndex(null);
+                                                                    handleReorderJobCardDocs(docs);
+                                                                }}
+                                                                className="flex items-center justify-between p-3 bg-slate-50 hover:bg-slate-100/80 dark:bg-slate-900/60 dark:hover:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs transition-all"
+                                                            >
+                                                                <div className="flex items-center gap-3">
+                                                                    <span className="font-bold text-slate-400 cursor-grab hover:text-slate-600">
+                                                                        <GripVertical className="w-4 h-4" />
+                                                                    </span>
+                                                                    <span className="font-black text-slate-700 dark:text-slate-300 w-6">
+                                                                        {index + 2}.
+                                                                    </span>
+                                                                    <div>
+                                                                        <div className="font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                                                                            <span>{doc.original_name}</span>
+                                                                            {isDocx ? (
+                                                                                <span className="bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300 text-[10px] font-black px-2 py-0.5 rounded-full border border-purple-200 dark:border-purple-800">
+                                                                                    {doc.file_type.toUpperCase()} → PDF
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className="bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300 text-[10px] font-black px-2 py-0.5 rounded-full border border-blue-200 dark:border-blue-800">
+                                                                                    PDF
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="text-[10px] text-slate-500 font-semibold mt-0.5 flex items-center gap-3">
+                                                                            <span>{doc.page_count ? `${doc.page_count} page${doc.page_count > 1 ? 's' : ''}` : 'Pages detected'}</span>
+                                                                            <span>•</span>
+                                                                            <span>{(doc.file_size / 1024).toFixed(0)} KB</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <Button
+                                                                        type="button"
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        disabled={index === 0}
+                                                                        onClick={() => handleMoveDocItem(index, 'up')}
+                                                                        className="h-7 w-7 p-0 rounded cursor-pointer"
+                                                                        title="Move Up"
+                                                                    >
+                                                                        <ChevronUp className="w-3.5 h-3.5" />
+                                                                    </Button>
+                                                                    <Button
+                                                                        type="button"
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        disabled={index === (jobCardData.documents.length - 1)}
+                                                                        onClick={() => handleMoveDocItem(index, 'down')}
+                                                                        className="h-7 w-7 p-0 rounded cursor-pointer"
+                                                                        title="Move Down"
+                                                                    >
+                                                                        <ChevronDown className="w-3.5 h-3.5" />
+                                                                    </Button>
+
+                                                                    <Button
+                                                                        type="button"
+                                                                        variant="outline"
+                                                                        size="sm"
+                                                                        onClick={() => setSelectedPreviewDoc(doc)}
+                                                                        className="h-7 px-2.5 text-[11px] font-bold text-slate-700 bg-white hover:bg-slate-100 rounded-lg cursor-pointer border-slate-300"
+                                                                    >
+                                                                        <Eye className="w-3 h-3 mr-1 text-blue-600" />
+                                                                        Preview
+                                                                    </Button>
+
+                                                                    <Button
+                                                                        type="button"
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        onClick={() => handleDeleteJobCardDoc(doc.id)}
+                                                                        className="h-7 w-7 p-0 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer"
+                                                                        title="Remove Document"
+                                                                    >
+                                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                                    </Button>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
+
+                                            {/* Combined Summary & Combined Actions Bar */}
+                                            <div className="pt-3 mt-2 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                                                <div className="text-slate-600 dark:text-slate-400 font-bold flex items-center gap-2">
+                                                    <span>Total Documents: <strong className="text-slate-900 dark:text-slate-100">{(jobCardData.documents || []).length + 1}</strong></span>
+                                                    <span>•</span>
+                                                    <span>Total Combined Pages: <strong className="text-indigo-600 dark:text-indigo-400">{(jobCardData.documents || []).reduce((acc: number, d: any) => acc + (d.page_count || 0), 1)}</strong></span>
+                                                </div>
+
+                                                <div className="flex items-center gap-2">
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        onClick={() => setCombinedPreviewOpen(true)}
+                                                        className="h-9 px-3 text-xs font-bold text-slate-800 bg-white hover:bg-slate-100 rounded-xl cursor-pointer border-slate-300"
+                                                    >
+                                                        <Eye className="w-3.5 h-3.5 mr-1.5 text-indigo-600" />
+                                                        Preview Combined Document
+                                                    </Button>
+
+                                                    <Button
+                                                        type="button"
+                                                        onClick={handleDownloadCombinedPdf}
+                                                        disabled={downloadingCombinedPdf}
+                                                        className="h-9 px-4 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs cursor-pointer gap-1.5 disabled:opacity-50"
+                                                    >
+                                                        <Download className={`w-3.5 h-3.5 ${downloadingCombinedPdf ? 'animate-spin' : ''}`} />
+                                                        {downloadingCombinedPdf ? "Generating Combined..." : "Download Combined PDF"}
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+
+                        </DialogContent>
+                    );
+                })()}
+            </Dialog>
+
+            {/* Individual Document Preview Modal */}
+            <Dialog open={!!selectedPreviewDoc} onOpenChange={(open) => !open && setSelectedPreviewDoc(null)}>
+                <DialogContent className="max-w-4xl max-h-[90vh] bg-card border-border/80 rounded-2xl p-6 shadow-2xl space-y-4">
+                    <DialogHeader>
+                        <DialogTitle className="text-base font-black flex items-center gap-2">
+                            <Eye className="w-5 h-5 text-indigo-600" />
+                            Preview Document: {selectedPreviewDoc?.original_name}
+                        </DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">
+                            Type: {selectedPreviewDoc?.file_type?.toUpperCase()} {selectedPreviewDoc?.converted_pdf_name ? '(Converted to PDF)' : ''} · {selectedPreviewDoc?.page_count || 0} pages
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {selectedPreviewDoc && jobCardModalOrder && (
+                        <div className="w-full h-[70vh] bg-slate-900 rounded-xl overflow-hidden border border-slate-700">
+                            <iframe
+                                src={`/api/admin/orders/${jobCardModalOrder.id}/job-card/documents/${selectedPreviewDoc.id}/file?token=${localStorage.getItem("admin_token")}`}
+                                className="w-full h-full border-0"
+                                title="Document Preview"
+                            />
+                        </div>
+                    )}
+
+                    <DialogFooter>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setSelectedPreviewDoc(null)}
+                            className="rounded-xl text-xs font-bold cursor-pointer"
+                        >
+                            Close Preview
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Combined Sequence Preview Modal */}
+            <Dialog open={combinedPreviewOpen} onOpenChange={setCombinedPreviewOpen}>
+                <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-card border-border/80 rounded-2xl p-6 shadow-2xl space-y-4">
+                    <DialogHeader>
+                        <DialogTitle className="text-base font-black flex items-center gap-2">
+                            <Layers className="w-5 h-5 text-indigo-600" />
+                            Combined Document Sequence Preview
+                        </DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">
+                            Order sequence preview of all documents that will be merged into the final PDF output.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-3 py-2">
+                        {/* 1. Job Card Card */}
+                        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-xl p-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <span className="w-8 h-8 rounded-full bg-amber-600 text-white font-black flex items-center justify-center text-xs">
+                                    1
+                                </span>
+                                <div>
+                                    <h4 className="font-extrabold text-sm text-slate-900 dark:text-slate-100">
+                                        Generated Job Card ({jobCardData?.job_number || jobCardModalOrder?.order_number})
+                                    </h4>
+                                    <p className="text-xs text-slate-500 font-medium">
+                                        Position: Primary Document (Main Job Card Specifications & Manufacturing Logs)
+                                    </p>
+                                </div>
+                            </div>
+                            <span className="px-3 py-1 bg-amber-200/80 text-amber-900 font-black text-xs rounded-full">
+                                Generated Job Card
+                            </span>
+                        </div>
+
+                        {/* Attached Documents Sequence Cards */}
+                        {(jobCardData?.documents || []).map((doc: any, i: number) => (
+                            <div key={doc.id} className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <span className="w-8 h-8 rounded-full bg-indigo-600 text-white font-black flex items-center justify-center text-xs">
+                                        {i + 2}
+                                    </span>
+                                    <div>
+                                        <h4 className="font-extrabold text-sm text-slate-900 dark:text-slate-100">
+                                            {doc.original_name}
+                                        </h4>
+                                        <p className="text-xs text-slate-500 font-medium">
+                                            {doc.page_count || 1} page(s) · {doc.file_type?.toUpperCase()} {doc.converted_pdf_name ? '(Converted to PDF)' : ''}
+                                        </p>
+                                    </div>
+                                </div>
+                                <span className="px-3 py-1 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs rounded-full">
+                                    Attachment #{i + 1}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+
+                    <DialogFooter className="flex items-center justify-between border-t pt-3">
+                        <div className="text-xs font-bold text-slate-600">
+                            Total Combined Output: <strong>{(jobCardData?.documents || []).length + 1} Documents</strong> (approx. {(jobCardData?.documents || []).reduce((a: number, d: any) => a + (d.page_count || 0), 1)} pages)
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setCombinedPreviewOpen(false)}
+                                className="rounded-xl text-xs font-bold cursor-pointer"
+                            >
+                                Close
+                            </Button>
+                            <Button
+                                type="button"
+                                onClick={() => {
+                                    setCombinedPreviewOpen(false);
+                                    handleDownloadCombinedPdf();
+                                }}
+                                disabled={downloadingCombinedPdf}
+                                className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold gap-1.5 cursor-pointer"
+                            >
+                                <Download className="w-3.5 h-3.5" />
+                                Download Combined PDF
+                            </Button>
+                        </div>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+
+            {/* Reorder Confirmation & Customization Dialog */}
+            <Dialog open={!!reorderModalOrder} onOpenChange={(open) => !open && setReorderModalOrder(null)}>
+                <DialogContent className="max-w-4xl sm:max-w-4xl w-[92vw] rounded-2xl p-6 shadow-2xl bg-card text-foreground border border-border/80">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-lg font-black text-foreground">
+                            <Copy className="w-5 h-5 text-blue-600" />
+                            Place Reorder
+                        </DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground pt-1 font-medium">
+                            Customize quantity, delivery date, PCB rate/SQM pricing, GST, and manual payment details for this reorder.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {reorderModalOrder && (() => {
+                        const custName = reorderModalOrder.customer_name
+                            || getMetaValue(reorderModalOrder, 'customer_name', getMetaValue(reorderModalOrder, 'name', ''))
+                            || reorderModalOrder.user_email
+                            || reorderModalOrder.user_mobile
+                            || 'N/A';
+
+                        let dimLen = parseFloat(getMetaValue(reorderModalOrder, 'dimensions_length', '0'));
+                        let dimWid = parseFloat(getMetaValue(reorderModalOrder, 'dimensions_width', '0'));
+                        if (!dimLen || !dimWid) {
+                            const dimStr = getMetaValue(reorderModalOrder, 'dimensions', '');
+                            const match = dimStr.match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/i);
+                            if (match) {
+                                dimLen = parseFloat(match[1]);
+                                dimWid = parseFloat(match[2]);
+                            } else {
+                                dimLen = 100;
+                                dimWid = 100;
+                            }
+                        }
+
+                        const areaPerBoardSqm = (dimLen * dimWid) / 1000000;
+                        const totalAreaSqm = areaPerBoardSqm * reorderQty;
+
+                        let subtotal = 0;
+                        if (reorderPricingMethod === 'pcb_rate') {
+                            subtotal = (parseFloat(reorderPcbRate) || 0) * reorderQty;
+                        } else {
+                            subtotal = (parseFloat(reorderPricePerSqm) || 0) * totalAreaSqm;
+                        }
+
+                        const gstAmount = subtotal * (reorderGstRate / 100);
+                        const totalAmount = subtotal + gstAmount;
+
+                        return (
+                            <form onSubmit={handleReorderSubmit} className="space-y-4 py-2">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-h-[75vh] overflow-y-auto pr-1">
+                                    {/* Left Column: Order Specifications & Pricing Inputs */}
+                                    <div className="space-y-4">
+                                        <div className="bg-muted/40 p-4 rounded-xl border border-border/60 space-y-2 text-xs font-medium">
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-muted-foreground font-semibold">Original Order #:</span>
+                                                <span className="font-mono font-bold text-foreground">#{reorderModalOrder.order_number}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-muted-foreground font-semibold">Customer:</span>
+                                                <span className="font-bold text-foreground">{custName}</span>
+                                            </div>
+                                            {reorderModalOrder.board_name && (
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-muted-foreground font-semibold">Board Name:</span>
+                                                    <span className="font-bold text-foreground truncate max-w-[220px]">{reorderModalOrder.board_name}</span>
+                                                </div>
+                                            )}
+                                            <div className="flex justify-between items-center pt-1 border-t border-border/40 text-[11px]">
+                                                <span className="text-muted-foreground">Dimensions:</span>
+                                                <span className="font-mono font-semibold">{dimLen} x {dimWid} mm ({areaPerBoardSqm.toFixed(4)} m²/board)</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="text-xs font-bold text-foreground block mb-1">
+                                                    Order Quantity (Pcs) <span className="text-red-500">*</span>
+                                                </label>
+                                                <Input
+                                                    type="number"
+                                                    min="1"
+                                                    value={reorderQty}
+                                                    onChange={(e) => setReorderQty(Math.max(1, parseInt(e.target.value) || 0))}
+                                                    className="w-full h-9 text-xs font-bold rounded-xl border border-input bg-background text-foreground shadow-xs focus:ring-2 focus:ring-blue-500/20"
+                                                    placeholder="Quantity..."
+                                                    required
+                                                />
+                                            </div>
+
+                                            <div>
+                                                <label className="text-xs font-bold text-foreground block mb-1">
+                                                    Delivery Date Option
+                                                </label>
+                                                <Input
+                                                    type="date"
+                                                    value={reorderDeliveryDate}
+                                                    onChange={(e) => setReorderDeliveryDate(e.target.value)}
+                                                    className="w-full h-9 text-xs font-bold rounded-xl border border-input bg-background text-foreground shadow-xs focus:ring-2 focus:ring-blue-500/20"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        {/* Pricing Options */}
+                                        <div className="p-3.5 bg-background border border-border rounded-xl space-y-3">
+                                            <label className="text-xs font-bold text-foreground block">
+                                                Pricing Method
+                                            </label>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setReorderPricingMethod('pcb_rate')}
+                                                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition-all cursor-pointer ${reorderPricingMethod === 'pcb_rate'
+                                                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                                        : 'bg-muted/50 text-muted-foreground border-border hover:bg-muted'
+                                                        }`}
+                                                >
+                                                    PCB Rate
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setReorderPricingMethod('price_per_sqm')}
+                                                    className={`py-2 px-3 text-xs font-bold rounded-xl border transition-all cursor-pointer ${reorderPricingMethod === 'price_per_sqm'
+                                                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                                        : 'bg-muted/50 text-muted-foreground border-border hover:bg-muted'
+                                                        }`}
+                                                >
+                                                    Price per SQM
+                                                </button>
+                                            </div>
+
+                                            {reorderPricingMethod === 'pcb_rate' ? (
+                                                <div className="space-y-1 pt-1">
+                                                    <label className="text-xs font-semibold text-muted-foreground block">
+                                                        PCB Rate (₹ per piece)
+                                                    </label>
+                                                    <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        value={reorderPcbRate}
+                                                        onChange={(e) => setReorderPcbRate(e.target.value)}
+                                                        className="w-full h-9 text-xs font-mono font-bold rounded-xl border border-input bg-background"
+                                                        placeholder="e.g. 100"
+                                                    />
+                                                    <p className="text-[10px] text-muted-foreground pt-0.5">
+                                                        PCB Amount = ₹{parseFloat(reorderPcbRate) || 0} × {reorderQty.toLocaleString()} Pcs = ₹{subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                    </p>
+                                                </div>
+                                            ) : (
+                                                <div className="space-y-1 pt-1">
+                                                    <label className="text-xs font-semibold text-muted-foreground block">
+                                                        Price per SQM (₹ per m²)
+                                                    </label>
+                                                    <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        value={reorderPricePerSqm}
+                                                        onChange={(e) => setReorderPricePerSqm(e.target.value)}
+                                                        className="w-full h-9 text-xs font-mono font-bold rounded-xl border border-input bg-background"
+                                                        placeholder="e.g. 5000"
+                                                    />
+                                                    <p className="text-[10px] text-muted-foreground pt-0.5">
+                                                        Total Area = {totalAreaSqm.toFixed(4)} m² ({dimLen}×{dimWid}mm × {reorderQty} Pcs)
+                                                    </p>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* GST Selection */}
+                                        <div className="p-3.5 bg-background border border-border rounded-xl space-y-2">
+                                            <div className="flex justify-between items-center">
+                                                <label className="text-xs font-bold text-foreground block">
+                                                    GST Rate
+                                                </label>
+                                                <span className="text-[10px] text-muted-foreground font-semibold">Configured in DB</span>
+                                            </div>
+                                            <select
+                                                value={reorderGstRate}
+                                                onChange={(e) => setReorderGstRate(Number(e.target.value))}
+                                                className="w-full h-9 text-xs font-bold rounded-xl border border-input bg-background text-foreground px-3 shadow-xs focus:ring-2 focus:ring-blue-500/20"
+                                            >
+                                                {gstOptionsList.map((rate) => (
+                                                    <option key={rate} value={rate}>
+                                                        {rate}% GST
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {/* Right Column: Pricing Summary & Payment Configuration */}
+                                    <div className="space-y-4">
+                                        {/* Pricing Summary Card */}
+                                        <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl space-y-2.5 text-xs">
+                                            <div className="font-bold text-foreground text-xs border-b border-border/40 pb-2 flex justify-between items-center">
+                                                <span className="text-sm font-black text-foreground">Pricing Summary</span>
+                                                <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 capitalize px-2 py-0.5 rounded-md bg-blue-500/10">
+                                                    Mode: {reorderPricingMethod === 'pcb_rate' ? 'PCB Rate' : 'Price per SQM'}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between items-center text-muted-foreground pt-1">
+                                                <span>Subtotal (Base PCB Amount):</span>
+                                                <span className="font-mono font-bold text-foreground text-xs">₹{subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center text-muted-foreground">
+                                                <span>GST ({reorderGstRate}%):</span>
+                                                <span className="font-mono font-bold text-foreground text-xs">₹{gstAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center pt-2 border-t border-blue-500/20 text-base">
+                                                <span className="font-black text-foreground">Total Amount:</span>
+                                                <span className="font-mono font-black text-blue-600 dark:text-blue-400 text-lg">
+                                                    ₹{totalAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        {/* Payment Section */}
+                                        <div className="p-4 bg-background border border-border rounded-xl space-y-3">
+                                            <label className="text-xs font-bold text-foreground block">
+                                                Payment Method
+                                            </label>
+                                            <select
+                                                value={reorderPaymentMethod}
+                                                onChange={(e) => setReorderPaymentMethod(e.target.value)}
+                                                className="w-full h-9 text-xs font-bold rounded-xl border border-input bg-background text-foreground px-3 shadow-xs focus:ring-2 focus:ring-blue-500/20"
+                                            >
+                                                <option value="Manual Payment">Manual Payment (Admin Record)</option>
+                                                <option value="Online">Online / Deferred Payment</option>
+                                            </select>
+
+                                            {reorderPaymentMethod === 'Manual Payment' && (
+                                                <div className="space-y-3 pt-2 border-t border-border/40">
+                                                    <p className="text-[11px] font-bold text-blue-600 dark:text-blue-400">
+                                                        Manual Payment Record Details
+                                                    </p>
+                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                                        <div>
+                                                            <label className="text-[10px] font-semibold text-muted-foreground block mb-1">
+                                                                Payment Reference / Txn ID
+                                                            </label>
+                                                            <Input
+                                                                type="text"
+                                                                value={reorderPaymentRef}
+                                                                onChange={(e) => setReorderPaymentRef(e.target.value)}
+                                                                className="w-full h-9 text-xs font-mono rounded-lg border border-input bg-background"
+                                                                placeholder="Auto-generated if empty..."
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="text-[10px] font-semibold text-muted-foreground block mb-1">
+                                                                Payment Date
+                                                            </label>
+                                                            <Input
+                                                                type="date"
+                                                                value={reorderPaymentDate}
+                                                                onChange={(e) => setReorderPaymentDate(e.target.value)}
+                                                                className="w-full h-9 text-xs rounded-lg border border-input bg-background"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-[10px] font-semibold text-muted-foreground block mb-1">
+                                                            Payment Notes / Remarks
+                                                        </label>
+                                                        <Input
+                                                            type="text"
+                                                            value={reorderPaymentNotes}
+                                                            onChange={(e) => setReorderPaymentNotes(e.target.value)}
+                                                            className="w-full h-9 text-xs rounded-lg border border-input bg-background"
+                                                            placeholder="e.g. Received via NEFT / Cash"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <DialogFooter className="flex items-center justify-end gap-2 pt-2 border-t border-border/60">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() => setReorderModalOrder(null)}
+                                        disabled={reordering}
+                                        className="rounded-xl text-xs font-bold cursor-pointer border border-border hover:bg-muted text-foreground"
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        type="submit"
+                                        disabled={reordering}
+                                        className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold gap-2 cursor-pointer shadow-sm"
+                                    >
+                                        {reordering ? (
+                                            <>
+                                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                                Placing Order...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Copy className="w-3.5 h-3.5" />
+                                                Place Reorder
+                                            </>
+                                        )}
+                                    </Button>
+                                </DialogFooter>
+                            </form>
+                        );
+                    })()}
+                </DialogContent>
+            </Dialog>
+
+            {/* Manufacturer Excel Import Modal */}
+            <Dialog open={importModalOpen} onOpenChange={(open) => {
+                if (!open && (importingPreview || executingImport)) return;
+                setImportModalOpen(open);
+                if (!open) {
+                    setImportFile(null);
+                    setImportPreviewData(null);
+                }
+            }}>
+                <DialogContent className="sm:max-w-7xl w-[95vw] max-h-[92vh] overflow-y-auto bg-card border-border/80 rounded-2xl shadow-2xl p-6 text-foreground">
+                    <DialogHeader>
+                        <DialogTitle className="text-lg font-black flex items-center gap-2">
+                            <FileSpreadsheet className="w-5 h-5 text-emerald-500" />
+                            Import PCB Orders from Manufacturer Excel
+                        </DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">
+                            Upload a manufacturer Excel file (.xlsx, .xls) matching the standard 19-column layout.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4 py-2">
+                        {/* Sample Sheet Download Banner */}
+                        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+                            <div className="space-y-0.5 text-left">
+                                <h4 className="text-xs font-black text-foreground">Import PCB Data</h4>
+                                <p className="text-[11px] text-muted-foreground">
+                                    Download the sample file, fill in your PCB manufacturing data, and upload it below.
+                                </p>
+                            </div>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={handleDownloadSampleSheet}
+                                className="shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs gap-1.5 cursor-pointer h-9"
+                            >
+                                <Download className="w-3.5 h-3.5" />
+                                Download Sample Sheet
+                            </Button>
+                        </div>
+
+                        {/* File Upload Zone */}
+                        <div className="border-2 border-dashed border-border/80 hover:border-emerald-500/50 rounded-2xl p-6 text-center transition-all bg-muted/20">
+                            <input
+                                type="file"
+                                id="excel-file-input"
+                                accept=".xlsx, .xls"
+                                className="hidden"
+                                onChange={(e) => {
+                                    const selected = e.target.files?.[0];
+                                    if (selected) {
+                                        setImportFile(selected);
+                                        setImportPreviewData(null);
+                                        handlePreviewImport(selected);
+                                    }
+                                }}
+                            />
+                            <label htmlFor="excel-file-input" className="cursor-pointer flex flex-col items-center justify-center gap-2">
+                                <Upload className="w-8 h-8 text-emerald-500" />
+                                <span className="text-xs font-bold text-foreground">
+                                    {importFile ? importFile.name : "Click to choose or drop manufacturer Excel file"}
+                                </span>
+                                <span className="text-[10px] text-muted-foreground font-medium">
+                                    Supported formats: .xlsx, .xls (max 50MB)
+                                </span>
+                            </label>
+                        </div>
+
+                        {importingPreview && (
+                            <div className="flex items-center justify-center gap-2 py-4 text-xs font-bold text-emerald-500">
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                Parsing headers & validating data rows...
+                            </div>
+                        )}
+
+                        {/* Import Preview Results */}
+                        {importPreviewData && importPreviewData.summary && (
+                            <div className="space-y-4">
+                                {/* Summary Badge Cards */}
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-center">
+                                    <div className="bg-blue-500/10 border border-blue-500/20 p-2 rounded-xl">
+                                        <div className="text-[9px] font-extrabold text-blue-500 uppercase">Total Rows</div>
+                                        <div className="text-sm font-black text-foreground">{importPreviewData.summary.total_rows}</div>
+                                    </div>
+                                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-xl">
+                                        <div className="text-[9px] font-extrabold text-emerald-500 uppercase">Valid Rows</div>
+                                        <div className="text-sm font-black text-emerald-600 dark:text-emerald-400">{importPreviewData.summary.valid_rows}</div>
+                                    </div>
+                                    <div className="bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl">
+                                        <div className="text-[9px] font-extrabold text-rose-500 uppercase">Invalid Rows</div>
+                                        <div className="text-sm font-black text-rose-500">{importPreviewData.summary.invalid_rows}</div>
+                                    </div>
+                                    <div className="bg-amber-500/10 border border-amber-500/20 p-2 rounded-xl">
+                                        <div className="text-[9px] font-extrabold text-amber-500 uppercase">Duplicates</div>
+                                        <div className="text-sm font-black text-amber-500">{importPreviewData.summary.duplicate_rows}</div>
+                                    </div>
+                                    <div className="bg-indigo-500/10 border border-indigo-500/20 p-2 rounded-xl">
+                                        <div className="text-[9px] font-extrabold text-indigo-500 uppercase">Existing Cust.</div>
+                                        <div className="text-sm font-black text-indigo-600 dark:text-indigo-400">{importPreviewData.summary.existing_customers_used ?? 0}</div>
+                                    </div>
+                                    <div className="bg-purple-500/10 border border-purple-500/20 p-2 rounded-xl">
+                                        <div className="text-[9px] font-extrabold text-purple-500 uppercase">New Cust.</div>
+                                        <div className="text-sm font-black text-purple-600 dark:text-purple-400">{importPreviewData.summary.new_customers_created ?? 0}</div>
+                                    </div>
+                                </div>
+
+                                {/* Duplicate Handling Radio Selection */}
+                                <div className="bg-muted/30 border border-border/60 p-3 rounded-xl space-y-2">
+                                    <label className="text-xs font-extrabold text-foreground uppercase tracking-wider block">
+                                        Duplicate Record Behavior:
+                                    </label>
+                                    <div className="flex flex-col sm:flex-row gap-3 text-xs font-bold text-foreground">
+                                        <label className="flex items-center gap-1.5 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="dupAction"
+                                                value="skip"
+                                                checked={importDuplicateAction === 'skip'}
+                                                onChange={() => setImportDuplicateAction('skip')}
+                                                className="accent-emerald-500"
+                                            />
+                                            Skip existing duplicates
+                                        </label>
+                                        <label className="flex items-center gap-1.5 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="dupAction"
+                                                value="update"
+                                                checked={importDuplicateAction === 'update'}
+                                                onChange={() => setImportDuplicateAction('update')}
+                                                className="accent-emerald-500"
+                                            />
+                                            Update existing records
+                                        </label>
+                                        <label className="flex items-center gap-1.5 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="dupAction"
+                                                value="create_new"
+                                                checked={importDuplicateAction === 'create_new'}
+                                                onChange={() => setImportDuplicateAction('create_new')}
+                                                className="accent-emerald-500"
+                                            />
+                                            Import all as new orders
+                                        </label>
+                                    </div>
+                                </div>
+
+                                {/* Customer Resolution & All Preview Rows Table */}
+                                {importPreviewData.preview_items && importPreviewData.preview_items.length > 0 && (
+                                    <div className="space-y-1.5">
+                                        <div className="text-xs font-extrabold text-foreground uppercase tracking-wider flex items-center justify-between">
+                                            <div className="flex items-center gap-1.5">
+                                                <User className="w-3.5 h-3.5 text-emerald-500" />
+                                                Customer Resolution & Preview (All {importPreviewData.preview_items.length} Rows Data)
+                                            </div>
+                                            <span className="text-[10px] text-muted-foreground font-semibold">
+                                                Showing {importPreviewData.preview_items.length} of {importPreviewData.summary?.total_rows ?? importPreviewData.preview_items.length} total rows
+                                            </span>
+                                        </div>
+                                        <div className="max-h-[500px] overflow-y-auto border border-border/80 rounded-xl bg-card text-xs">
+                                            <table className="w-full text-left border-collapse">
+                                                <thead className="bg-muted/80 backdrop-blur-xs text-[10px] font-extrabold uppercase text-muted-foreground border-b border-border/80 sticky top-0 z-10">
+                                                    <tr>
+                                                        <th className="p-2.5 pl-3">Row</th>
+                                                        <th className="p-2.5">Customer Name</th>
+                                                        <th className="p-2.5">P/N (Part Name)</th>
+                                                        <th className="p-2.5">Qty</th>
+                                                        <th className="p-2.5">Order Date</th>
+                                                        <th className="p-2.5">Launch Date</th>
+                                                        <th className="p-2.5">Delivery Date</th>
+                                                        <th className="p-2.5">Record Type</th>
+                                                        <th className="p-2.5 text-center">Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-border/60 font-medium">
+                                                    {importPreviewData.preview_items.map((item: any, idx: number) => (
+                                                        <tr key={idx} className="hover:bg-muted/30">
+                                                            <td className="p-2.5 pl-3 font-mono font-bold text-muted-foreground">#{item.row_number}</td>
+                                                            <td className="p-2.5 font-bold text-foreground">{item.customer_name || 'N/A'}</td>
+                                                            <td className="p-2.5 font-mono text-[11px] font-bold">{item.p_n || 'N/A'}</td>
+                                                            <td className="p-2.5 font-mono text-[11px]">{item.quantity ? `${item.quantity} pcs` : '-'}</td>
+                                                            <td className="p-2.5 text-[11px] whitespace-nowrap">{item.order_date || '-'}</td>
+                                                            <td className="p-2.5 text-[11px] whitespace-nowrap">{item.launch_date || '-'}</td>
+                                                            <td className="p-2.5 text-[11px] whitespace-nowrap">{item.delivery_date || '-'}</td>
+                                                            <td className="p-2.5">
+                                                                {item.is_duplicate ? (
+                                                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                                                        Duplicate ({item.matched_order_number || 'Tool Match'})
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                                                                        New Record
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                            <td className="p-2.5 text-center font-bold">
+                                                                {item.is_valid ? (
+                                                                    <span className="text-emerald-500 flex items-center justify-center gap-1 text-[11px]">
+                                                                        <CheckCircle className="w-3.5 h-3.5" /> Valid
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="text-rose-500 flex items-center justify-center gap-1 text-[11px]">
+                                                                        <AlertTriangle className="w-3.5 h-3.5" /> Error
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Validation Error List Preview */}
+                                {importPreviewData.invalid_rows && importPreviewData.invalid_rows.length > 0 && (
+                                    <div className="space-y-1.5">
+                                        <div className="text-xs font-extrabold text-rose-500 flex items-center gap-1.5">
+                                            <AlertTriangle className="w-4 h-4" />
+                                            Invalid Rows Summary ({importPreviewData.invalid_rows.length} rows will be skipped):
+                                        </div>
+                                        <div className="max-h-36 overflow-y-auto border border-rose-500/20 bg-rose-500/5 rounded-xl p-3 text-[11px] space-y-1">
+                                            {importPreviewData.invalid_rows.map((inv: any, i: number) => (
+                                                <div key={i} className="flex gap-2">
+                                                    <span className="font-bold text-rose-500 shrink-0">Row {inv.row}:</span>
+                                                    <span className="text-muted-foreground">
+                                                        {Object.entries(inv.errors || {}).map(([col, err]) => `${col}: ${err}`).join(" | ")}
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {/* Background Import Operations & History */}
+                        <div className="space-y-3 pt-2">
+                            <div className="flex items-center justify-between">
+                                <h4 className="text-xs font-black text-foreground uppercase tracking-wider flex items-center gap-1.5">
+                                    <Clock className="w-3.5 h-3.5 text-emerald-500" />
+                                    Recent Background Imports ({importHistory.length})
+                                </h4>
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={fetchImportHistory}
+                                    className="h-7 text-[11px] font-bold text-muted-foreground hover:text-foreground gap-1 cursor-pointer"
+                                >
+                                    <RefreshCw className={`w-3 h-3 ${importHistoryLoading ? 'animate-spin' : ''}`} />
+                                    Refresh Status
+                                </Button>
+                            </div>
+
+                            {importHistory.length === 0 ? (
+                                <div className="text-center py-6 border border-dashed border-border/60 rounded-xl text-xs text-muted-foreground">
+                                    No background imports recorded yet. Upload a file above to start.
+                                </div>
+                            ) : (
+                                <div className="max-h-60 overflow-y-auto border border-border/80 rounded-xl bg-card text-xs">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead className="bg-muted/60 text-[10px] font-extrabold uppercase text-muted-foreground border-b border-border/80 sticky top-0 bg-muted/80 backdrop-blur-xs">
+                                            <tr>
+                                                <th className="p-2.5 pl-3">File Name</th>
+                                                <th className="p-2.5">Status</th>
+                                                <th className="p-2.5">Progress</th>
+                                                <th className="p-2.5">Records</th>
+                                                <th className="p-2.5 text-right pr-3">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-border/60 font-medium">
+                                            {importHistory.map((imp: any) => {
+                                                const pct = imp.total_rows > 0 ? Math.min(100, Math.round((imp.processed_rows / imp.total_rows) * 100)) : 0;
+                                                return (
+                                                    <tr key={imp.id} className="hover:bg-muted/30">
+                                                        <td className="p-2.5 pl-3">
+                                                            <div className="font-bold text-foreground text-xs truncate max-w-[160px]">{imp.original_file_name}</div>
+                                                            <div className="text-[10px] text-muted-foreground">{formatDate(imp.created_at)}</div>
+                                                        </td>
+                                                        <td className="p-2.5">
+                                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold capitalize inline-flex items-center gap-1 ${imp.status === 'completed' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' :
+                                                                imp.status === 'processing' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 animate-pulse' :
+                                                                    imp.status === 'queued' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20' :
+                                                                        imp.status === 'failed' ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20' :
+                                                                            'bg-muted text-muted-foreground'
+                                                                }`}>
+                                                                {imp.status === 'processing' && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
+                                                                {imp.status}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-2.5">
+                                                            <div className="w-28 space-y-1">
+                                                                <div className="flex justify-between text-[10px] font-bold">
+                                                                    <span>{imp.processed_rows} / {imp.total_rows}</span>
+                                                                    <span>{pct}%</span>
+                                                                </div>
+                                                                <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                                                                    <div
+                                                                        className={`h-full transition-all duration-300 ${imp.status === 'completed' ? 'bg-emerald-500' :
+                                                                            imp.status === 'failed' ? 'bg-rose-500' : 'bg-blue-500'
+                                                                            }`}
+                                                                        style={{ width: `${pct}%` }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-2.5 text-[11px]">
+                                                            <span className="text-emerald-600 font-bold">{imp.successful_rows || 0} OK</span>
+                                                            {imp.failed_rows > 0 && <span className="text-rose-500 font-bold ml-1.5">{imp.failed_rows} Failed</span>}
+                                                        </td>
+                                                        <td className="p-2.5 text-right pr-3">
+                                                            <div className="flex items-center justify-end gap-1">
+                                                                <Button
+                                                                    type="button"
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    onClick={() => fetchImportDetail(imp.id)}
+                                                                    className="h-7 text-[11px] font-bold px-2 cursor-pointer"
+                                                                >
+                                                                    <Eye className="w-3.5 h-3.5 text-blue-500" />
+                                                                </Button>
+                                                                {imp.status === 'failed' && (
+                                                                    <Button
+                                                                        type="button"
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        onClick={() => handleRetryImport(imp.id)}
+                                                                        className="h-7 text-[11px] font-bold text-amber-500 hover:text-amber-600 px-2 cursor-pointer"
+                                                                        title="Retry Import"
+                                                                    >
+                                                                        <RefreshCw className="w-3.5 h-3.5" />
+                                                                    </Button>
+                                                                )}
+                                                                {imp.status === 'queued' && (
+                                                                    <Button
+                                                                        type="button"
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        onClick={() => handleCancelImport(imp.id)}
+                                                                        className="h-7 text-[11px] font-bold text-rose-500 hover:text-rose-600 px-2 cursor-pointer"
+                                                                        title="Cancel Queue"
+                                                                    >
+                                                                        <X className="w-3.5 h-3.5" />
+                                                                    </Button>
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    <DialogFooter className="flex items-center justify-end gap-2 pt-2">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                                setImportModalOpen(false);
+                                setImportFile(null);
+                                setImportPreviewData(null);
+                            }}
+                            disabled={executingImport}
+                            className="rounded-xl text-xs font-bold cursor-pointer"
+                        >
+                            Close
+                        </Button>
+                        <Button
+                            type="button"
+                            onClick={handleExecuteImport}
+                            disabled={!importFile || !importPreviewData || importPreviewData.summary?.valid_rows === 0 || executingImport}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold gap-2 cursor-pointer shadow-xs"
+                        >
+                            {executingImport ? (
+                                <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    Queueing Import...
+                                </>
+                            ) : (
+                                <>
+                                    <Upload className="w-3.5 h-3.5" />
+                                    Upload & Queue Import
+                                </>
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Import Detail & Error Log Dialog */}
+            <Dialog open={importDetailOpen} onOpenChange={(open) => setImportDetailOpen(open)}>
+                <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto bg-card border-border/80 rounded-2xl shadow-xl p-6 text-foreground">
+                    <DialogHeader>
+                        <DialogTitle className="text-lg font-black flex items-center gap-2">
+                            <FileSpreadsheet className="w-5 h-5 text-emerald-500" />
+                            Import #{selectedImportDetail?.id} — {selectedImportDetail?.original_file_name}
+                        </DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">
+                            Complete background processing lifecycle and row validation results.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {selectedImportDetail && (
+                        <div className="space-y-4 py-2 text-xs">
+                            {/* Stats Summary */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                                <div className="bg-muted/40 p-2.5 rounded-xl border border-border/60">
+                                    <div className="text-[10px] font-extrabold text-muted-foreground uppercase">Status</div>
+                                    <div className="text-sm font-black capitalize text-foreground">{selectedImportDetail.status}</div>
+                                </div>
+                                <div className="bg-emerald-500/10 p-2.5 rounded-xl border border-emerald-500/20">
+                                    <div className="text-[10px] font-extrabold text-emerald-500 uppercase">Successful Rows</div>
+                                    <div className="text-sm font-black text-emerald-600 dark:text-emerald-400">{selectedImportDetail.successful_rows} / {selectedImportDetail.total_rows}</div>
+                                </div>
+                                <div className="bg-rose-500/10 p-2.5 rounded-xl border border-rose-500/20">
+                                    <div className="text-[10px] font-extrabold text-rose-500 uppercase">Failed Rows</div>
+                                    <div className="text-sm font-black text-rose-500">{selectedImportDetail.failed_rows}</div>
+                                </div>
+                                <div className="bg-purple-500/10 p-2.5 rounded-xl border border-purple-500/20">
+                                    <div className="text-[10px] font-extrabold text-purple-500 uppercase">New Customers</div>
+                                    <div className="text-sm font-black text-purple-600 dark:text-purple-400">{selectedImportDetail.new_customers}</div>
+                                </div>
+                            </div>
+
+                            {selectedImportDetail.error_message && (
+                                <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-3 text-rose-500 space-y-1">
+                                    <div className="font-bold flex items-center gap-1.5 text-xs">
+                                        <AlertTriangle className="w-4 h-4" /> Global Error:
+                                    </div>
+                                    <div className="text-[11px] font-mono">{selectedImportDetail.error_message}</div>
+                                </div>
+                            )}
+
+                            {/* Error Log Table */}
+                            <div className="space-y-1.5">
+                                <h4 className="text-xs font-black text-foreground uppercase tracking-wider flex items-center gap-1.5">
+                                    <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+                                    Row Validation Error Logs ({selectedImportDetail.errors?.length || 0})
+                                </h4>
+                                {selectedImportDetail.errors && selectedImportDetail.errors.length > 0 ? (
+                                    <div className="max-h-60 overflow-y-auto border border-border/80 rounded-xl bg-card">
+                                        <table className="w-full text-left border-collapse text-xs">
+                                            <thead className="bg-muted/60 text-[10px] font-extrabold uppercase text-muted-foreground border-b border-border/80 sticky top-0 bg-muted/80 backdrop-blur-xs">
+                                                <tr>
+                                                    <th className="p-2 pl-3">Row</th>
+                                                    <th className="p-2">Column</th>
+                                                    <th className="p-2">Value</th>
+                                                    <th className="p-2">Error Message</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-border/60 font-medium">
+                                                {selectedImportDetail.errors.map((err: any) => (
+                                                    <tr key={err.id} className="hover:bg-muted/30">
+                                                        <td className="p-2 pl-3 font-mono font-bold text-muted-foreground">#{err.row_number}</td>
+                                                        <td className="p-2 font-bold text-foreground">{err.column_name || 'N/A'}</td>
+                                                        <td className="p-2 font-mono text-[11px] text-muted-foreground">{err.value || 'N/A'}</td>
+                                                        <td className="p-2 text-rose-500 font-medium">{err.error_message}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    <div className="text-center py-4 text-xs text-muted-foreground border border-dashed border-border/60 rounded-xl">
+                                        No row errors logged for this import.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    <DialogFooter>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setImportDetailOpen(false)}
+                            className="rounded-xl text-xs font-bold cursor-pointer"
+                        >
+                            Close
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Export PCB Data Modal */}
+            <Dialog open={exportModalOpen} onOpenChange={(open) => setExportModalOpen(open)}>
+                <DialogContent className="sm:max-w-7xl w-[95vw] max-h-[92vh] overflow-y-auto bg-card border-border/80 rounded-2xl shadow-2xl p-6 text-foreground">
+                    <DialogHeader>
+                        <DialogTitle className="text-lg font-black flex items-center gap-2">
+                            <Download className="w-5 h-5 text-emerald-500" />
+                            Export PCB Data
+                        </DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">
+                            Define filter criteria, preview matching PCB records, and select export format (XLSX / CSV).
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-6 py-2">
+                        {/* Filters Form Card */}
+                        <div className="bg-muted/30 border border-border/60 p-4 rounded-2xl space-y-4">
+                            <div className="text-xs font-extrabold text-foreground uppercase tracking-wider flex items-center gap-1.5 border-b border-border/50 pb-2">
+                                <Search className="w-3.5 h-3.5 text-emerald-500" />
+                                Export Filters
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+                                {/* Date Type Selector */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Date Field</label>
+                                    <Select value={exportDateField} onValueChange={setExportDateField}>
+                                        <SelectTrigger className="h-9 text-xs rounded-xl border-border/80 bg-card">
+                                            <SelectValue placeholder="Date Field" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="created_at">Order Date</SelectItem>
+                                            <SelectItem value="launch_date">Launch Date</SelectItem>
+                                            <SelectItem value="delivery_date">Delivery Date</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                {/* From Date */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">From Date</label>
+                                    <Input
+                                        type="date"
+                                        value={exportStartDate}
+                                        onChange={(e) => setExportStartDate(e.target.value)}
+                                        className="h-9 text-xs rounded-xl border-border/80 bg-card"
+                                    />
+                                </div>
+
+                                {/* To Date */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">To Date</label>
+                                    <Input
+                                        type="date"
+                                        value={exportEndDate}
+                                        onChange={(e) => setExportEndDate(e.target.value)}
+                                        className="h-9 text-xs rounded-xl border-border/80 bg-card"
+                                    />
+                                </div>
+
+                                {/* Status */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Status</label>
+                                    <Select value={exportStatus} onValueChange={setExportStatus}>
+                                        <SelectTrigger className="h-9 text-xs rounded-xl border-border/80 bg-card">
+                                            <SelectValue placeholder="All Statuses" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="All">All Statuses</SelectItem>
+                                            {statuses.map((st) => (
+                                                <SelectItem key={st.id} value={st.slug || st.name}>
+                                                    {st.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                {/* Customer */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Customer Name</label>
+                                    <Input
+                                        type="text"
+                                        placeholder="All Customers"
+                                        value={exportCustomer}
+                                        onChange={(e) => setExportCustomer(e.target.value)}
+                                        className="h-9 text-xs rounded-xl border-border/80 bg-card"
+                                    />
+                                </div>
+
+                                {/* Layer */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Layer</label>
+                                    <Select value={exportLayer} onValueChange={setExportLayer}>
+                                        <SelectTrigger className="h-9 text-xs rounded-xl border-border/80 bg-card">
+                                            <SelectValue placeholder="All Layers" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="All">All Layers</SelectItem>
+                                            <SelectItem value="1">1 Layer</SelectItem>
+                                            <SelectItem value="2">2 Layer</SelectItem>
+                                            <SelectItem value="4">4 Layer</SelectItem>
+                                            <SelectItem value="6">6 Layer</SelectItem>
+                                            <SelectItem value="8">8 Layer</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                {/* Mask */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Mask Colour</label>
+                                    <Select value={exportMask} onValueChange={setExportMask}>
+                                        <SelectTrigger className="h-9 text-xs rounded-xl border-border/80 bg-card">
+                                            <SelectValue placeholder="All Masks" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="All">All Masks</SelectItem>
+                                            <SelectItem value="Green">Green</SelectItem>
+                                            <SelectItem value="Red">Red</SelectItem>
+                                            <SelectItem value="Blue">Blue</SelectItem>
+                                            <SelectItem value="Black">Black</SelectItem>
+                                            <SelectItem value="White">White</SelectItem>
+                                            <SelectItem value="Yellow">Yellow</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                {/* C/G */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">C/G</label>
+                                    <Select value={exportCg} onValueChange={setExportCg}>
+                                        <SelectTrigger className="h-9 text-xs rounded-xl border-border/80 bg-card">
+                                            <SelectValue placeholder="All C/G" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="All">All</SelectItem>
+                                            <SelectItem value="Cash">Cash</SelectItem>
+                                            <SelectItem value="GST">GST</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                {/* Part Number (P/N) */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">P/N (Part Number)</label>
+                                    <Input
+                                        type="text"
+                                        placeholder="Search Part Number"
+                                        value={exportPn}
+                                        onChange={(e) => setExportPn(e.target.value)}
+                                        className="h-9 text-xs rounded-xl border-border/80 bg-card"
+                                    />
+                                </div>
+
+                                {/* Quote # (Q# No.) */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Q# No. (Quote Number)</label>
+                                    <Input
+                                        type="text"
+                                        placeholder="Search Quote Number"
+                                        value={exportQuoteNo}
+                                        onChange={(e) => setExportQuoteNo(e.target.value)}
+                                        className="h-9 text-xs rounded-xl border-border/80 bg-card"
+                                    />
+                                </div>
+
+                                {/* Tool */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Tool</label>
+                                    <Input
+                                        type="text"
+                                        placeholder="All Tools"
+                                        value={exportTool}
+                                        onChange={(e) => setExportTool(e.target.value)}
+                                        className="h-9 text-xs rounded-xl border-border/80 bg-card"
+                                    />
+                                </div>
+
+                                {/* Bill Number */}
+                                <div>
+                                    <label className="text-[10px] font-bold text-muted-foreground uppercase">Bill Number</label>
+                                    <Input
+                                        type="text"
+                                        placeholder="Search Bill Number"
+                                        value={exportBillNo}
+                                        onChange={(e) => setExportBillNo(e.target.value)}
+                                        className="h-9 text-xs rounded-xl border-border/80 bg-card"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="flex items-center justify-end gap-2 pt-1">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => {
+                                        handleResetExportFilters();
+                                        fetchExportPreview(1);
+                                    }}
+                                    className="rounded-xl text-xs font-bold h-8 px-3 cursor-pointer"
+                                >
+                                    Reset Filters
+                                </Button>
+                                <Button
+                                    type="button"
+                                    onClick={() => fetchExportPreview(1)}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold h-8 px-4 gap-1.5 cursor-pointer"
+                                >
+                                    <Search className="w-3.5 h-3.5" />
+                                    Apply Filters
+                                </Button>
+                            </div>
+                        </div>
+
+                        {/* Filter Preview Section */}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                                <div className="text-xs font-black text-foreground uppercase tracking-wider flex items-center gap-2">
+                                    Preview
+                                    <span className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold lowercase">
+                                        {exportPreviewLoading ? "counting..." : `${exportPreviewData?.total_count ?? exportPreviewData?.total ?? exportPreviewData?.data?.length ?? 0} records found`}
+                                    </span>
+                                </div>
+                                {exportPreviewData && (exportPreviewData.last_page > 1 || (exportPreviewData.total_pages && exportPreviewData.total_pages > 1)) && (
+                                    <div className="flex items-center gap-1.5 text-xs">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={exportPreviewPage <= 1 || exportPreviewLoading}
+                                            onClick={() => fetchExportPreview(exportPreviewPage - 1)}
+                                            className="h-7 w-7 p-0 rounded-lg cursor-pointer"
+                                        >
+                                            <ChevronLeft className="w-3.5 h-3.5" />
+                                        </Button>
+                                        <span className="text-[11px] font-bold text-muted-foreground">
+                                            Page {exportPreviewPage} of {exportPreviewData.last_page ?? exportPreviewData.total_pages ?? 1}
+                                        </span>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={exportPreviewPage >= (exportPreviewData.last_page ?? exportPreviewData.total_pages ?? 1) || exportPreviewLoading}
+                                            onClick={() => fetchExportPreview(exportPreviewPage + 1)}
+                                            className="h-7 w-7 p-0 rounded-lg cursor-pointer"
+                                        >
+                                            <ChevronRight className="w-3.5 h-3.5" />
+                                        </Button>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Preview Table */}
+                            <div className="border border-border/80 rounded-2xl overflow-hidden bg-card text-xs">
+                                {exportPreviewLoading ? (
+                                    <div className="p-8 text-center text-muted-foreground flex items-center justify-center gap-2">
+                                        <RefreshCw className="w-4 h-4 animate-spin text-emerald-500" />
+                                        Loading filter preview...
+                                    </div>
+                                ) : exportPreviewData && exportPreviewData.data && exportPreviewData.data.length > 0 ? (
+                                    <div className="max-h-[500px] overflow-y-auto overflow-x-auto">
+                                        <table className="w-full text-left border-collapse">
+                                            <thead className="bg-muted/80 backdrop-blur-xs text-[10px] font-extrabold uppercase text-muted-foreground border-b border-border/80 sticky top-0 z-10">
+                                                <tr>
+                                                    <th className="p-2.5 pl-4">Order Date</th>
+                                                    <th className="p-2.5">Q# No.</th>
+                                                    <th className="p-2.5">Customer</th>
+                                                    <th className="p-2.5">P/N</th>
+                                                    <th className="p-2.5 text-center">Layer</th>
+                                                    <th className="p-2.5 text-center">Qty</th>
+                                                    <th className="p-2.5 text-center">Final Qty</th>
+                                                    <th className="p-2.5 text-center">Status</th>
+                                                    <th className="p-2.5 pr-4">Bill #</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-border/60 text-xs font-medium">
+                                                {exportPreviewData.data.map((row: any) => (
+                                                    <tr key={row.id} className="hover:bg-muted/30 transition-all">
+                                                        <td className="p-2.5 pl-4 font-mono text-[11px] font-semibold">{row.order_date || 'N/A'}</td>
+                                                        <td className="p-2.5 font-mono text-emerald-600 font-bold">{row.quote_number || 'N/A'}</td>
+                                                        <td className="p-2.5 font-bold truncate max-w-[140px]">{row.customer_name || 'N/A'}</td>
+                                                        <td className="p-2.5 font-semibold text-foreground/80 truncate max-w-[120px]">{row.p_n || row.board_name || 'N/A'}</td>
+                                                        <td className="p-2.5 text-center font-bold">{row.layer || '1'}</td>
+                                                        <td className="p-2.5 text-center font-mono font-bold">{row.qty || '0'}</td>
+                                                        <td className="p-2.5 text-center font-mono font-bold text-emerald-600 dark:text-emerald-400">{row.completed_qty || row.final_qty || '0'}</td>
+                                                        <td className="p-2.5 text-center">
+                                                            <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-blue-500/10 text-blue-500 uppercase">
+                                                                {row.status || 'N/A'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-2.5 pr-4 font-mono text-muted-foreground">{row.bill_number || 'N/A'}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    <div className="p-8 text-center text-muted-foreground space-y-1">
+                                        <Info className="w-6 h-6 text-amber-500 mx-auto mb-1" />
+                                        <p className="font-bold text-xs">No records found for the selected filters.</p>
+                                        <p className="text-[11px]">Please adjust your filter criteria and try again.</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Selected Filters Summary & Download Controls */}
+                        <div className="bg-muted/20 border border-border/80 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                            {/* Active Filters Summary */}
+                            <div className="space-y-1 text-xs">
+                                <div className="font-extrabold text-foreground uppercase tracking-wider text-[10px]">Export Summary:</div>
+                                <div className="flex flex-wrap gap-2 text-[11px] font-medium text-muted-foreground">
+                                    <span className="bg-card border border-border/80 px-2.5 py-1 rounded-lg">
+                                        <strong className="text-foreground">Records:</strong> {exportPreviewData?.total_count ?? exportPreviewData?.total ?? exportPreviewData?.data?.length ?? 0}
+                                    </span>
+                                    <span className="bg-card border border-border/80 px-2.5 py-1 rounded-lg">
+                                        <strong className="text-foreground">Status:</strong> {exportStatus}
+                                    </span>
+                                    {exportCustomer && (
+                                        <span className="bg-card border border-border/80 px-2.5 py-1 rounded-lg">
+                                            <strong className="text-foreground">Customer:</strong> {exportCustomer}
+                                        </span>
+                                    )}
+                                    {(exportStartDate || exportEndDate) && (
+                                        <span className="bg-card border border-border/80 px-2.5 py-1 rounded-lg">
+                                            <strong className="text-foreground">Date:</strong> {exportStartDate || 'Start'} → {exportEndDate || 'End'}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Export Format Selector & Action */}
+                            <div className="flex items-center gap-3 shrink-0">
+                                <div className="flex items-center gap-2 bg-card border border-border/80 p-1.5 rounded-xl text-xs font-bold">
+                                    <label className="flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer hover:bg-muted/50">
+                                        <input
+                                            type="radio"
+                                            name="exportFormat"
+                                            value="xlsx"
+                                            checked={exportFormat === 'xlsx'}
+                                            onChange={() => setExportFormat('xlsx')}
+                                            className="accent-emerald-500"
+                                        />
+                                        XLSX
+                                    </label>
+                                    <label className="flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer hover:bg-muted/50">
+                                        <input
+                                            type="radio"
+                                            name="exportFormat"
+                                            value="csv"
+                                            checked={exportFormat === 'csv'}
+                                            onChange={() => setExportFormat('csv')}
+                                            className="accent-emerald-500"
+                                        />
+                                        CSV
+                                    </label>
+                                </div>
+
+                                <Button
+                                    type="button"
+                                    onClick={handleDownloadFilteredExport}
+                                    disabled={exporting || !exportPreviewData || ((exportPreviewData.total_count ?? exportPreviewData.total ?? 0) === 0 && (!exportPreviewData.data || exportPreviewData.data.length === 0))}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs gap-2 px-5 h-10 cursor-pointer"
+                                >
+                                    {exporting ? (
+                                        <>
+                                            <RefreshCw className="w-4 h-4 animate-spin" />
+                                            Generating Export...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Download className="w-4 h-4" />
+                                            Download {exportFormat.toUpperCase()} ({exportPreviewData?.total_count ?? exportPreviewData?.total ?? exportPreviewData?.data?.length ?? 0})
+                                        </>
+                                    )}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+        </DashboardLayout>
+    );
+}
+
+export default function OrdersPage() {
+    return (
+        <Suspense fallback={<OrdersSkeleton />}>
+            <OrdersContent />
+        </Suspense>
+    );
+}

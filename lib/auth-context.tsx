@@ -1,0 +1,350 @@
+"use client";
+
+import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { getDefaultRedirectRoute } from "@/lib/permissions-helper";
+
+export interface User {
+    id: number;
+    username?: string;
+    email: string;
+    name: string;
+    mobile?: string | null;
+    profile_picture?: string | null;
+    avatar_url?: string | null;
+    role?: string;
+    permissions?: string[];
+    created_at?: string;
+    last_login_at?: string;
+}
+
+interface AuthContextType {
+    isAuthenticated: boolean;
+    user: User | null;
+    login: (usernameOrEmail: string, password: string) => Promise<void>;
+    logout: () => void;
+    updateUser: (updatedData: Partial<User>) => void;
+    refreshProfile: () => Promise<void>;
+    refreshPermissions: () => Promise<string[] | null>;
+    isLoading: boolean;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [user, setUser] = useState<User | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const router = useRouter();
+
+    useEffect(() => {
+        // Check authentication on mount
+        const auth = localStorage.getItem("isAuthenticated");
+        const token = localStorage.getItem("admin_token");
+        const userData = localStorage.getItem("user");
+        
+        const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+        if (pathname !== "/login") {
+            if (auth !== "true" || !token) {
+                setIsAuthenticated(false);
+                setUser(null);
+                setIsLoading(false);
+                router.replace("/login");
+                return;
+            }
+        }
+
+        if (auth === "true" && userData) {
+            setIsAuthenticated(true);
+            try {
+                setUser(JSON.parse(userData));
+            } catch (e) {
+                setUser(null);
+            }
+            refreshProfile();
+            refreshPermissions();
+        }
+        setIsLoading(false);
+    }, [router]);
+
+    const refreshPermissions = async (): Promise<string[] | null> => {
+        try {
+            const token = typeof window !== "undefined" ? localStorage.getItem("admin_token") : null;
+            if (!token) return null;
+
+            const permRes = await fetch("/api/admin/my-permissions", {
+                headers: { Authorization: `Bearer ${token}` },
+                cache: "no-store",
+            });
+
+            if (!permRes.ok) {
+                if (permRes.status === 401) {
+                    logout();
+                }
+                return null;
+            }
+
+            const permData = await permRes.json();
+            if (permData && permData.status && Array.isArray(permData.permissions)) {
+                const freshPermissions: string[] = permData.permissions;
+                const freshRole: string | undefined = permData.role;
+                const isSuper: boolean = !!permData.is_super_admin;
+
+                setUser((prev) => {
+                    if (!prev) return null;
+
+                    const prevPerms = prev.permissions || [];
+                    const prevRole = prev.role;
+                    const targetRole = freshRole || (isSuper ? "Super Admin" : prevRole);
+
+                    const isSameLength = prevPerms.length === freshPermissions.length;
+                    const isSamePerms = isSameLength && prevPerms.every((p, idx) => p === freshPermissions[idx]);
+                    const isSameRole = prevRole === targetRole;
+
+                    if (isSamePerms && isSameRole) {
+                        return prev;
+                    }
+
+                    const updated: User = {
+                        ...prev,
+                        role: targetRole,
+                        permissions: freshPermissions,
+                    };
+                    localStorage.setItem("user", JSON.stringify(updated));
+
+                    if (typeof window !== "undefined") {
+                        window.dispatchEvent(
+                            new CustomEvent("permissions-updated", {
+                                detail: {
+                                    permissions: freshPermissions,
+                                    role: targetRole,
+                                    isSuperAdmin: isSuper,
+                                },
+                            })
+                        );
+                    }
+
+                    return updated;
+                });
+
+                return freshPermissions;
+            }
+        } catch (e) {
+            console.error("Failed to fetch fresh permissions", e);
+        }
+        return null;
+    };
+
+    // Poll permissions every 10 seconds while logged in
+    useEffect(() => {
+        if (!isAuthenticated) return;
+
+        // Run once on authentication
+        refreshPermissions();
+
+        // 10-second polling interval
+        const intervalId = setInterval(() => {
+            refreshPermissions();
+        }, 10000);
+
+        // Immediate check when returning to tab
+        const handleVisibilityOrFocus = () => {
+            if (typeof document !== "undefined" && document.visibilityState === "visible") {
+                refreshPermissions();
+            }
+        };
+
+        window.addEventListener("visibilitychange", handleVisibilityOrFocus);
+        window.addEventListener("focus", handleVisibilityOrFocus);
+
+        return () => {
+            clearInterval(intervalId);
+            window.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+            window.removeEventListener("focus", handleVisibilityOrFocus);
+        };
+    }, [isAuthenticated]);
+
+    const refreshProfile = async () => {
+        try {
+            const token = localStorage.getItem("admin_token");
+            if (!token) return;
+            const res = await fetch("/api/admin/profile", {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (res.ok && data.status && data.data) {
+                const freshUser = data.data;
+                setUser((prev) => {
+                    const updated: User = {
+                        id: freshUser.id,
+                        name: freshUser.name,
+                        email: freshUser.email,
+                        username: freshUser.username,
+                        mobile: freshUser.mobile,
+                        profile_picture: freshUser.profile_picture,
+                        avatar_url: freshUser.avatar_url,
+                        role: freshUser.role || prev?.role || "Admin",
+                        permissions: prev?.permissions || [],
+                        created_at: freshUser.created_at,
+                        last_login_at: freshUser.last_login_at
+                    };
+                    localStorage.setItem("user", JSON.stringify(updated));
+                    return updated;
+                });
+            }
+        } catch (e) {
+            console.error("Failed to refresh profile", e);
+        }
+    };
+
+    const updateUser = (updatedData: Partial<User>) => {
+        setUser((prev) => {
+            if (!prev) return null;
+            const newUserData = { ...prev, ...updatedData };
+            localStorage.setItem("user", JSON.stringify(newUserData));
+            return newUserData;
+        });
+    };
+
+    const login = async (usernameOrEmail: string, password: string) => {
+        const response = await fetch("/api/admin/login", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                username: usernameOrEmail,
+                email: usernameOrEmail,
+                password
+            }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.status) {
+            throw new Error(data.message || "Invalid credentials");
+        }
+
+        const adminInfo = data.data || data.admin || {};
+        const token = adminInfo.access_token || data.token || "";
+
+        if (token) {
+            localStorage.setItem("admin_token", token);
+        }
+
+        // Fetch fresh role permissions list
+        let freshPermissions: string[] = adminInfo.permissions || [];
+        try {
+            const permRes = await fetch("/api/admin/my-permissions", {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const permData = await permRes.json();
+            if (permRes.ok && permData.status && Array.isArray(permData.permissions)) {
+                freshPermissions = permData.permissions;
+            }
+        } catch (e) {
+            console.error("Failed to fetch fresh permissions after login", e);
+        }
+
+        const userData: User = {
+            id: adminInfo.id || adminInfo.admin_id || data.admin_id || 1,
+            username: adminInfo.username || usernameOrEmail,
+            email: adminInfo.email || usernameOrEmail,
+            name: adminInfo.name || "Admin User",
+            mobile: adminInfo.mobile || null,
+            profile_picture: adminInfo.profile_picture || null,
+            avatar_url: adminInfo.avatar_url || null,
+            role: adminInfo.role || "Admin",
+            permissions: freshPermissions
+        };
+
+        localStorage.setItem("isAuthenticated", "true");
+        localStorage.setItem("user", JSON.stringify(userData));
+
+        setUser(userData);
+        setIsAuthenticated(true);
+        const targetRoute = getDefaultRedirectRoute(freshPermissions, userData.role);
+        router.push(targetRoute);
+    };
+
+    const logout = () => {
+        localStorage.removeItem("isAuthenticated");
+        localStorage.removeItem("user");
+        localStorage.removeItem("admin_token");
+        
+        setIsAuthenticated(false);
+        setUser(null);
+        if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+            window.location.href = "/login";
+        }
+    };
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        const originalFetch = window.fetch;
+
+        window.fetch = async (...args) => {
+            const response = await originalFetch(...args);
+
+            // Do not intercept login endpoint itself to prevent infinite loop or clearing before login attempt completes
+            const requestUrl = typeof args[0] === "string" ? args[0] : (args[0] as Request)?.url || "";
+            if (requestUrl.includes("/api/admin/login")) {
+                return response;
+            }
+
+            if (response.status === 401) {
+                localStorage.removeItem("isAuthenticated");
+                localStorage.removeItem("user");
+                localStorage.removeItem("admin_token");
+                setIsAuthenticated(false);
+                setUser(null);
+                if (window.location.pathname !== "/login") {
+                    window.location.href = "/login";
+                }
+            } else {
+                try {
+                    const clone = response.clone();
+                    const data = await clone.json();
+                    if (
+                        data &&
+                        (data.message === "Invalid token" ||
+                            data.message === "Unauthenticated." ||
+                            (data.success === false && typeof data.message === "string" && data.message.toLowerCase().includes("token")))
+                    ) {
+                        localStorage.removeItem("isAuthenticated");
+                        localStorage.removeItem("user");
+                        localStorage.removeItem("admin_token");
+                        setIsAuthenticated(false);
+                        setUser(null);
+                        if (window.location.pathname !== "/login") {
+                            window.location.href = "/login";
+                        }
+                    }
+                } catch {
+                    // Ignore non-JSON responses
+                }
+            }
+
+            return response;
+        };
+
+        return () => {
+            window.fetch = originalFetch;
+        };
+    }, []);
+
+    return (
+        <AuthContext.Provider value={{ isAuthenticated, user, login, logout, updateUser, refreshProfile, refreshPermissions, isLoading }}>
+            {children}
+        </AuthContext.Provider>
+    );
+}
+
+export function useAuth() {
+    const context = useContext(AuthContext);
+    if (context === undefined) {
+        throw new Error("useAuth must be used within an AuthProvider");
+    }
+    return context;
+}
