@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-    title: "MCS Admin Panel",
+    title: "Admin Panel",
     description: "Admin dashboard - Your Company",
     icons: {
         icon: "/images/favicon.png",
