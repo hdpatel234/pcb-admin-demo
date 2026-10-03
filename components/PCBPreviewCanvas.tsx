@@ -204,7 +204,7 @@ export default function PCBPreviewCanvas({
 
             // Large logo/label
             ctx.font = "bold 11px sans-serif";
-            ctx.fillText("MEGABYTE CIRCUITS", icX - 60, icY - 95);
+            ctx.fillText("Your Company", icX - 60, icY - 95);
 
             ctx.beginPath();
             ctx.moveTo(icX - 60, icY - 90);

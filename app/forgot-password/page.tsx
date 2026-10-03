@@ -289,7 +289,7 @@ function AdminForgotPasswordContent() {
                     <div className="mb-6 flex items-center justify-center p-2 rounded-2xl bg-zinc-800/60 border border-zinc-700/60 shadow-inner relative group overflow-hidden">
                         <Image
                             src="/images/logo.png"
-                            alt="Megabyte Circuits Logo"
+                            alt="Your Company Logo"
                             width={160}
                             height={48}
                             className="h-10 w-auto object-contain relative z-10"

@@ -74,7 +74,7 @@ export default function LoginPage() {
                         <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/10 to-green-500/10 opacity-0 group-hover:opacity-100 transition-opacity" />
                         <Image
                             src="/images/logo.png"
-                            alt="Megabyte Circuits Logo"
+                            alt="Your Company Logo"
                             width={160}
                             height={48}
                             className="h-10 w-auto object-contain relative z-10"
@@ -84,7 +84,7 @@ export default function LoginPage() {
                     </div>
 
                     <h1 className="text-2xl font-bold tracking-tight text-white text-center mb-1 bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
-                        Megabyte Circuits
+                        Your Company
                     </h1>
                     <p className="text-sm text-zinc-400 text-center mb-8 font-medium">
                         Admin Control Panel

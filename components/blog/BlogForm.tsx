@@ -406,7 +406,7 @@ export function BlogForm({ initialData, isEdit = false }: BlogFormProps) {
                                     <Input
                                         value={authorName}
                                         onChange={(e) => setAuthorName(e.target.value)}
-                                        placeholder="e.g. Megabyte Circuits"
+                                        placeholder="e.g. Your Company"
                                         className="mt-1 bg-background"
                                     />
                                 </div>

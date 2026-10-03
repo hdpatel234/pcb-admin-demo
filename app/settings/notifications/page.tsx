@@ -355,7 +355,7 @@ export default function NotificationSettingsPage() {
                                     onClick={async () => {
                                         const success = await showBrowserNotification({
                                             title: previewEvent ? previewEvent.event_name : "Test Admin Notification",
-                                            message: previewEvent ? (previewEvent.description || "This is a test notification.") : "This is a test notification from Megabyte Circuits Admin.",
+                                            message: previewEvent ? (previewEvent.description || "This is a test notification.") : "This is a test notification from Your Company Admin.",
                                             action_url: "/settings/notifications"
                                         });
                                         if (success) {
