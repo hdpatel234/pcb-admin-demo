@@ -538,7 +538,7 @@ export default function SettingsPage() {
                             />
                             <PlainInput
                                 label="FROM EMAIL"
-                                placeholder="quote@megabytecircuit.com"
+                                placeholder=""
                                 type="email"
                                 value={creds.MAIL_FROM_ADDRESS || ""}
                                 onChange={(val) => handleChange("MAIL_FROM_ADDRESS", val)}
@@ -601,11 +601,10 @@ export default function SettingsPage() {
                                 </div>
 
                                 {testEmailResult && (
-                                    <div className={`p-3.5 rounded-xl border text-xs font-medium flex items-start gap-2.5 transition-all ${
-                                        testEmailResult.success 
-                                            ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400" 
+                                    <div className={`p-3.5 rounded-xl border text-xs font-medium flex items-start gap-2.5 transition-all ${testEmailResult.success
+                                            ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
                                             : "bg-red-500/10 border-red-500/30 text-red-700 dark:text-red-400"
-                                    }`}>
+                                        }`}>
                                         {testEmailResult.success ? (
                                             <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
                                         ) : (
@@ -645,22 +644,20 @@ export default function SettingsPage() {
                                     <button
                                         type="button"
                                         onClick={() => handleChange("DIGIKEY_MODE", "sandbox")}
-                                        className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                                            (creds.DIGIKEY_MODE || "sandbox") === "sandbox"
+                                        className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all cursor-pointer ${(creds.DIGIKEY_MODE || "sandbox") === "sandbox"
                                                 ? "bg-amber-500 text-white shadow-xs"
                                                 : "text-muted-foreground hover:text-foreground"
-                                        }`}
+                                            }`}
                                     >
                                         Sandbox (Test)
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => handleChange("DIGIKEY_MODE", "live")}
-                                        className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                                            creds.DIGIKEY_MODE === "live"
+                                        className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all cursor-pointer ${creds.DIGIKEY_MODE === "live"
                                                 ? "bg-emerald-500 text-white shadow-xs"
                                                 : "text-muted-foreground hover:text-foreground"
-                                        }`}
+                                            }`}
                                     >
                                         Live (Production)
                                     </button>
