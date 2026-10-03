@@ -497,7 +497,7 @@ function ProfileContent() {
                                                 value={email}
                                                 onChange={(e) => setEmail(e.target.value)}
                                                 required
-                                                placeholder="admin@megabyte.com"
+                                                placeholder="admin@company.com"
                                                 className="w-full bg-background border border-border/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-foreground font-medium placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500 transition shadow-2xs"
                                             />
                                         </div>

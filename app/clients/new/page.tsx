@@ -226,7 +226,7 @@ export default function AddClientPage() {
                     <Mail className="w-4 h-4 text-muted-foreground absolute left-3 top-3" />
                     <input
                       type="email"
-                      placeholder="e.g. client@megabyte.com (Optional)"
+                      placeholder="e.g. client@company.com (Optional)"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       className="w-full pl-9 pr-3.5 py-2.5 bg-muted/30 border border-border/80 rounded-xl text-foreground focus:outline-hidden focus:border-emerald-500 text-xs font-medium"

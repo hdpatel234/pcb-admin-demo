@@ -2068,7 +2068,7 @@ export default function OrderDetailPage() {
                                 {renderSpecItem('dimensions', 'Dimensions', getMetaValue('dimensions', (getMetaValue('dimensions_width') && getMetaValue('dimensions_length')) ? `${getMetaValue('dimensions_width')} x ${getMetaValue('dimensions_length')} ${getMetaValue('dimension_unit', 'mm')}` : '100x100mm'), 'text')}
                                 {renderSpecItem('order_qty', 'PCB Quantity', String(order.order_qty || getMetaValue('quantity', getMetaValue('qty', '5'))), 'number', undefined, `${order.order_qty || getMetaValue('quantity', getMetaValue('qty', '5'))} Pcs`)}
                                 {renderSpecItem('different_design', 'Different Design Count', getMetaValue('different_design', '1'), 'select', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'])}
-                                {renderSpecItem('delivery_format', 'Delivery Format', getMetaValue('delivery_format', 'Single PCB'), 'select', ['Single PCB', 'Panel by Customer', 'Panel by Megabyte'])}
+                                {renderSpecItem('delivery_format', 'Delivery Format', getMetaValue('delivery_format', 'Single PCB'), 'select', ['Single PCB', 'Panel by Customer', 'Panel by company'])}
                                 {renderSpecItem('panel_format', 'Panel Layout', getMetaValue('panel_format', 'N/A'), 'text')}
                             </div>
                         </div>

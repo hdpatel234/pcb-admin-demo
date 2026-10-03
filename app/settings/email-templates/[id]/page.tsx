@@ -479,7 +479,7 @@ export default function EditEmailTemplatePage({ params }: { params: Promise<{ id
                                             type="text"
                                             value={fromEmail}
                                             onChange={(e) => setFromEmail(e.target.value)}
-                                            placeholder="notifications@megabytecircuit.com"
+                                            placeholder="notifications@companycircuit.com"
                                             className="w-full px-3.5 py-2 bg-background border border-input rounded-lg text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20"
                                         />
                                     </div>

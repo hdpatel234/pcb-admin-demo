@@ -584,7 +584,7 @@ export function BlogForm({ initialData, isEdit = false }: BlogFormProps) {
                                     <Input
                                         value={canonicalUrl}
                                         onChange={(e) => setCanonicalUrl(e.target.value)}
-                                        placeholder="https://megabytecircuits.com/blogs/..."
+                                        placeholder="https://companycircuits.com/blogs/..."
                                         className="mt-1 bg-background"
                                     />
                                 </div>

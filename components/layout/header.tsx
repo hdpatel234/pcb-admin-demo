@@ -317,7 +317,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
                                 />
                                 <div className="overflow-hidden">
                                     <p className="text-xs font-bold text-white truncate">{user?.name || "Admin User"}</p>
-                                    <p className="text-[11px] text-slate-400 font-mono truncate">{user?.email || "admin@megabyte.com"}</p>
+                                    <p className="text-[11px] text-slate-400 font-mono truncate">{user?.email || "admin@company.com"}</p>
                                     <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[9px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                                         {user?.role || "Administrator"}
                                     </span>

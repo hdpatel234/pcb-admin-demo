@@ -545,13 +545,13 @@ export default function SettingsPage() {
                             />
                             <PlainInput
                                 label="FROM NAME"
-                                placeholder="megabytecircuit.com"
+                                placeholder="companycircuit.com"
                                 value={creds.MAIL_FROM_NAME || ""}
                                 onChange={(val) => handleChange("MAIL_FROM_NAME", val)}
                             />
                             <PlainInput
                                 label="BCC EMAIL(S)"
-                                placeholder="pcb@megabytecircuit.com, admin@megabytecircuit.com"
+                                placeholder="pcb@companycircuit.com, admin@companycircuit.com"
                                 value={creds.MAIL_BCC_ADDRESS || ""}
                                 onChange={(val) => handleChange("MAIL_BCC_ADDRESS", val)}
                             />
@@ -743,8 +743,8 @@ export default function SettingsPage() {
                             />
                             <PlainInput
                                 label="IMAGEKIT STORAGE PATH"
-                                placeholder="/Megabyte"
-                                value={creds.IMAGEKIT_STORAGE_PATH || "/Megabyte"}
+                                placeholder="/company"
+                                value={creds.IMAGEKIT_STORAGE_PATH || "/company"}
                                 onChange={(val) => handleChange("IMAGEKIT_STORAGE_PATH", val)}
                             />
                         </div>
